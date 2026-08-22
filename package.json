@@ -40,8 +40,16 @@
 		"llm",
 		"pi-extension"
 	],
-	"author": "",
+	"author": "wentaonb123",
 	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/wentaonb123/acp-headroom-pi.git"
+	},
+	"homepage": "https://github.com/wentaonb123/acp-headroom-pi#readme",
+	"bugs": {
+		"url": "https://github.com/wentaonb123/acp-headroom-pi/issues"
+	},
 	"type": "module",
 	"peerDependencies": {
 		"@earendil-works/pi-coding-agent": "*",
