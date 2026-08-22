@@ -157,9 +157,9 @@ function wireSessionLifecycle(pi: ExtensionAPI, runtime: AcpRuntime, headroom: H
 // messages about to be sent. We run acp-kernel's processTurn (prune + ref-tag +
 // nudge decision) and return the transformed AgentMessage[].
 function wireContextTransform(pi: ExtensionAPI, runtime: AcpRuntime, headroom: HeadroomStage): void {
-  // Tracks proxy availability across context events so the "proxy unreachable"
-  // UI notice fires once per lapse, not once per LLM call.
-  let hrWasDown = false;
+  // Counts consecutive context rounds with an unreachable proxy so the UI
+  // notice fires only on confirmed outages, not single-probe blips.
+  let hrDownRounds = 0;
   pi.on("context", async (event, ctx) => {
     const sid = ctx.sessionManager.getSessionId();
     const release = await runtime.acquireLock(sid);
@@ -184,12 +184,16 @@ function wireContextTransform(pi: ExtensionAPI, runtime: AcpRuntime, headroom: H
           }
           hrSavedTokens = hr.savedTokens;
         }
-        // One-time UI notice per availability lapse (stage logs the rest).
-        if (!hr.available && !hrWasDown) {
-          hrWasDown = true;
-          if (ctx.hasUI) ctx.ui.notify(`[ACP] Headroom proxy unreachable at ${resolveHeadroom(runtime.adapter).proxyUrl} — tool outputs pass through uncompressed. Start it with: headroom proxy --port 8787`);
-        } else if (hr.available) {
-          hrWasDown = false;
+        // Notify only after TWO consecutive unavailable rounds: a single
+        // transient health-probe miss (event-loop stall aborting the request)
+        // must not ping the user, while a real outage surfaces on round 2.
+        if (!hr.available) {
+          hrDownRounds += 1;
+          if (hrDownRounds === 2 && ctx.hasUI) {
+            ctx.ui.notify(`[ACP] Headroom proxy unreachable at ${resolveHeadroom(runtime.adapter).proxyUrl} — tool outputs pass through uncompressed. Start it with: headroom proxy --port 8787`);
+          }
+        } else if (hrDownRounds > 0) {
+          hrDownRounds = 0;
         }
       }
       const configBase = runtime.configFor(ctx);

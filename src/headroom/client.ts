@@ -2,7 +2,7 @@ import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import { homedir } from "node:os";
 import { spawn, type ChildProcess } from "node:child_process";
-import { logInfo, logWarn } from "../log.js";
+import { logWarn } from "../log.js";
 
 /** HTTP client for the local Headroom compression proxy plus the plugin-side
  *  CCR disk backup. All functions fail-open (return null / false) — the stage
@@ -16,23 +16,45 @@ export interface CompressOutcome {
 }
 
 const HEALTH_TTL_MS = 30_000;
+// Health probes run inside pi's context event, where the event loop may be
+// blocked by heavy synchronous work (token estimation, kernel pipeline). A
+// blocked loop fires AbortSignal late-but-immediately, killing an otherwise
+// healthy request — so the budget must exceed any plausible stall (3s), and a
+// single failed probe must be confirmed by a retry before we declare downtime.
+const HEALTH_TIMEOUT_MS = 3_000;
+// After a CONFIRMED outage, stop probing for this long: fast fail-open instead
+// of paying the double-probe cost on every LLM call while the proxy is down.
+const NEGATIVE_TTL_MS = 15_000;
 let healthyUntil = 0;
+let unhealthyUntil = 0;
 
 export function invalidateHealth(): void {
 	healthyUntil = 0;
+	unhealthyUntil = 0;
 }
 
-export async function proxyHealthy(baseUrl: string, timeoutMs = 1000): Promise<boolean> {
-	if (Date.now() < healthyUntil) return true;
+async function healthOnce(baseUrl: string, timeoutMs: number): Promise<boolean> {
 	try {
 		const resp = await fetch(new URL("/health", baseUrl), { signal: AbortSignal.timeout(timeoutMs) });
-		if (resp.ok) {
-			healthyUntil = Date.now() + HEALTH_TTL_MS;
-			return true;
-		}
+		return resp.ok;
 	} catch {
-		// not reachable
+		return false;
 	}
+}
+
+/** Hysteretic health check: positive result caches for 30s; a failure is
+ *  retried once before counting as down (absorbs event-loop-stall aborts),
+ *  and a confirmed outage is negatively cached for 15s. */
+export async function proxyHealthy(baseUrl: string, timeoutMs = HEALTH_TIMEOUT_MS): Promise<boolean> {
+	const now = Date.now();
+	if (now < healthyUntil) return true;
+	if (now < unhealthyUntil) return false;
+	if ((await healthOnce(baseUrl, timeoutMs)) || (await healthOnce(baseUrl, timeoutMs))) {
+		healthyUntil = Date.now() + HEALTH_TTL_MS;
+		unhealthyUntil = 0;
+		return true;
+	}
+	unhealthyUntil = Date.now() + NEGATIVE_TTL_MS;
 	return false;
 }
 
@@ -78,7 +100,14 @@ export async function startProxy(baseUrl: string): Promise<boolean> {
 		const deadline = Date.now() + 20_000;
 		while (Date.now() < deadline) {
 			await new Promise((r) => setTimeout(r, 500));
-			if (await proxyHealthy(baseUrl)) return true;
+			// Raw probe: proxyHealthy's negative cache would short-circuit these
+			// polls right after the failed pre-spawn check, never seeing the
+			// freshly spawned process come up.
+			if (await healthOnce(baseUrl, HEALTH_TIMEOUT_MS)) {
+				healthyUntil = Date.now() + HEALTH_TTL_MS;
+				unhealthyUntil = 0;
+				return true;
+			}
 		}
 		void spawned?.kill();
 		spawnedProxies.delete(spawned!);
@@ -219,8 +248,4 @@ export async function retrieveOriginal(baseUrl: string, hash: string, timeoutMs 
 	} catch {
 		return null;
 	}
-}
-
-export function logHeadroomUnavailable(baseUrl: string): void {
-	logInfo("headroom", { event: "proxy-unavailable", proxyUrl: baseUrl });
 }
