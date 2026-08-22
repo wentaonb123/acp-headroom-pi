@@ -1,0 +1,64 @@
+{
+	"name": "acp-headroom-pi",
+	"version": "0.1.0",
+	"description": "ACP + Headroom for the Pi coding agent. Model-driven context management fused with mechanical tool-output compression via a local Headroom proxy.",
+	"main": "dist/index.js",
+	"types": "dist/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		}
+	},
+	"pi": {
+		"extensions": [
+			"./dist/index.js"
+		]
+	},
+	"files": [
+		"dist",
+		"README.md",
+		"LICENSE"
+	],
+	"sideEffects": false,
+	"engines": {
+		"node": ">=20"
+	},
+	"scripts": {
+		"test": "node --import tsx --test tests/*.test.ts",
+		"typecheck": "tsc --noEmit",
+		"build": "tsup && tsc --emitDeclarationOnly"
+	},
+	"keywords": [
+		"pi-package",
+		"pi",
+		"acp",
+		"headroom",
+		"context",
+		"compression",
+		"context-management",
+		"llm",
+		"pi-extension"
+	],
+	"author": "",
+	"license": "MIT",
+	"type": "module",
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*",
+		"typebox": "*"
+	},
+	"devDependencies": {
+		"@earendil-works/pi-coding-agent": "0.83.0",
+		"@types/node": "^26.1.2",
+		"acp-kernel": "0.0.32",
+		"billion-context-kit": "0.2.0",
+		"tsup": "^8.5.1",
+		"tsx": "^4.23.1",
+		"typescript": "^7.0.2"
+	},
+	"overrides": {
+		"billion-context-kit": {
+			"acp-kernel": "$acp-kernel"
+		}
+	}
+}
