@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { CoreMessage } from "acp-kernel";
 import type { AdapterConfig } from "../config.js";
 import { resolveHeadroom, type ResolvedHeadroomConfig } from "./config.js";
-import { compressToolOutput, proxyHealthy, saveOriginals, startProxy } from "./client.js";
+import { compressToolOutput, originOf, proxyHealthy, saveOriginals, startProxy } from "./client.js";
 import { debug, logInfo, logWarn } from "../log.js";
 
 type StageCoreMessage = Pick<CoreMessage, "id" | "role" | "text" | "toolName">;
@@ -28,7 +28,11 @@ export interface HeadroomApplyResult {
 	available: boolean;
 }
 
-const EMPTY: HeadroomApplyResult = { replacements: new Map(), applied: 0, savedTokens: 0, available: true };
+/** Fresh result object per call — a shared constant would hand every caller
+ *  the same Map instance. */
+function emptyResult(): HeadroomApplyResult {
+	return { replacements: new Map(), applied: 0, savedTokens: 0, available: true };
+}
 
 interface CacheEntry {
 	text: string;
@@ -60,17 +64,17 @@ export class HeadroomStage {
 	 *  Returns id → replacement text; never throws (fail-open). */
 	async apply(coreMessages: StageCoreMessage[], modelId: string): Promise<HeadroomApplyResult> {
 		const cfg = resolveHeadroom(this.getAdapter());
-		if (!cfg.enabled || coreMessages.length === 0) return EMPTY;
+		if (!cfg.enabled || coreMessages.length === 0) return emptyResult();
 		try {
 			return await this.applyInner(coreMessages, modelId, cfg);
 		} catch (e) {
 			logWarn("headroom", { event: "stage-error", error: e instanceof Error ? e.message : String(e) });
-			return EMPTY;
+			return emptyResult();
 		}
 	}
 
 	private async applyInner(coreMessages: StageCoreMessage[], modelId: string, cfg: ResolvedHeadroomConfig): Promise<HeadroomApplyResult> {
-		if (!(await this.ensureProxy(cfg))) return { ...EMPTY, available: false };
+		if (!(await this.ensureProxy(cfg))) return { ...emptyResult(), available: false };
 
 		// Current-turn results are the model's active working set — never touched.
 		let lastUserIdx = -1;
@@ -88,7 +92,7 @@ export class HeadroomStage {
 				&& index < lastUserIdx
 				&& !ALREADY_COMPRESSED.some((marker) => m.text!.includes(marker)));
 
-		if (candidates.length === 0) return EMPTY;
+		if (candidates.length === 0) return emptyResult();
 
 		// Latency cap: only the largest results within the per-turn budget.
 		const budget = new Set(
@@ -99,10 +103,14 @@ export class HeadroomStage {
 		);
 
 		const result: HeadroomApplyResult = { replacements: new Map(), applied: 0, savedTokens: 0, available: true };
+		// Cache key includes proxy origin + modelId: the compressed output (and
+		// its CCR hashes) belong to whichever proxy produced them, so a
+		// mid-session config change must not keep serving stale entries.
+		const cachePrefix = `${originOf(cfg.proxyUrl)}|${modelId}|`;
 		for (const { m, index } of candidates) {
 			if (!budget.has(index)) continue;
 			const text = m.text!;
-			const key = sha256(text);
+			const key = `${cachePrefix}${sha256(text)}`;
 			let entry = this.cache.get(key);
 			if (!entry) {
 				const outcome = await compressToolOutput(cfg.proxyUrl, { toolName: m.toolName ?? "", text, model: modelId, timeoutMs: cfg.timeoutMs });

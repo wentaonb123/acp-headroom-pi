@@ -119,7 +119,11 @@ async function statusReport(runtime: AcpRuntime, ctx: ExtensionCommandContext): 
   const coveredIds = collectCoveredMessageIds(state);
   const modelId = (ctx.model as { id?: string } | undefined)?.id ?? "default";
   const sentTokens = estimateTokens(coreMessages, coveredIds) + systemPromptTokens;
-  const turn = runtime.core.processTurn({ messages: coreMessages, state, config, tokenCount: calibrateTokens(sentTokens, runtime.density.densityFor(modelId)) });
+  // Minimal runtime mocks in older tests may predate runInCountScope.
+  const countSid = ctx.sessionManager?.getSessionId?.() ?? "default";
+  const scoped = <T,>(fn: () => T): T =>
+    typeof runtime.runInCountScope === "function" ? runtime.runInCountScope(countSid, fn) : fn();
+  const turn = scoped(() => runtime.core.processTurn({ messages: coreMessages, state, config, tokenCount: calibrateTokens(sentTokens, runtime.density.densityFor(modelId)) }));
 
   // Shared kit surface renders the panel (dual accounting, viability
   // filtering, bars, block list with topic fallback). Host-specific inputs:

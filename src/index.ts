@@ -167,7 +167,7 @@ function wireContextTransform(pi: ExtensionAPI, runtime: AcpRuntime, headroom: H
       await runtime.reloadConfig(ctx.cwd);
       // 每轮绑定 countTokens 使用的模型（密度校准按 model 隔离）
       const modelId = (ctx.model as { id?: string } | undefined)?.id ?? "default";
-      runtime.setCountModel(modelId);
+      runtime.setCountModel(sid, modelId);
       const { state, coreMessages, entries } = await runtime.stateFor(ctx, event.messages);
       // HEADROOM STAGE: mechanical compression of oversized tool outputs
       // BEFORE token estimation / nudge arbitration, so every downstream
@@ -289,7 +289,10 @@ function wireContextTransform(pi: ExtensionAPI, runtime: AcpRuntime, headroom: H
         activeBefore: state.blocks.filter((b) => b.active).length,
       });
 
-      const turn = runtime.core.processTurn({ messages: coreMessages, state, config, tokenCount });
+      // processTurn runs synchronously inside this session's count scope, so
+      // its density-scaled countTokens calls resolve THIS session's model even
+      // when concurrent sessions interleave at the awaits above.
+      const turn = runtime.runInCountScope(sid, () => runtime.core.processTurn({ messages: coreMessages, state, config, tokenCount }));
       await runtime.save(turn.state, ctx);
       // 密度校准（Phase 2）：processTurn 后调用，countTokens 用上一轮 density（1 轮延迟可忽略）。
       // real 侧 = provider 锚定 usage（缺失时锚点冻结，§5.9）；est 侧 = 发送视图估算
@@ -350,7 +353,7 @@ function wireContextTransform(pi: ExtensionAPI, runtime: AcpRuntime, headroom: H
     // block so the retry-cap suppression below sees the newest outcome
     // (a success on this fire must lift the cap on this same fire).
     const compressOutcomes = collectCompressOutcomes(entries, turnStartIndex(entries));
-    const outcome = compressOutcomes.length > 0 ? runtime.noteCompressOutcomes(turnKey, compressOutcomes) : null;
+    const outcome = compressOutcomes.length > 0 ? runtime.noteCompressOutcomes(sid, turnKey, compressOutcomes) : null;
 
     if (turn.nudge?.shouldInject) {
       // Two independent channels for the nudge:
@@ -377,7 +380,7 @@ function wireContextTransform(pi: ExtensionAPI, runtime: AcpRuntime, headroom: H
       // keeps usage pinned at emergency). Once this turn burned
       // MAX_COMPRESS_ATTEMPTS attempts, stop re-injecting the nudge — the
       // kernel's emergency truncation still shrinks context mechanically.
-      const retryCapped = runtime.compressRetryCappedFor(turnKey);
+      const retryCapped = runtime.compressRetryCappedFor(sid, turnKey);
       const alreadyShown = retryCapped || (!emergency && runtime.nudgeShownFor(turnKey));
       if (!alreadyShown) {
         rebuilt.push(nudgeMessage(turn.nudge, turn.state.blocks.filter((b) => b.active), runtime.prompts));

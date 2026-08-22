@@ -59,15 +59,16 @@ async function handleStatus(args: StatusArgs, runtime: AcpRuntime, ctx: Extensio
   // session-tree number from getContextUsage, which includes compressed
   // originals and never shrinks (false emergencies; see src/index.ts).
   const modelId = (ctx.model as { id?: string } | undefined)?.id ?? "default";
+  const sid = ctx.sessionManager.getSessionId();
   const systemPromptText = getSystemPromptText(ctx);
   const systemPromptTokens = systemPromptText ? defaultCountTokens(systemPromptText) : 0;
   const sentTokens = estimateTokens(coreMessages, coveredIds) + systemPromptTokens;
-  const turn = runtime.core.processTurn({
+  const turn = runtime.runInCountScope(sid, () => runtime.core.processTurn({
     messages: coreMessages,
     state,
     config,
     tokenCount: calibrateTokens(sentTokens, runtime.density.densityFor(modelId)),
-  });
+  }));
   const processed = turn.messages;
 
   const base = buildStatusReport(turn.state, processed, defaultCountTokens, {

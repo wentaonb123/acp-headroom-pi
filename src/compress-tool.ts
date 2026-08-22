@@ -135,6 +135,19 @@ function tier3OnlyRewrite(newBlocks: CompressionBlock[], allBlocks: CompressionB
 }
 
 async function handleCompress(args: CompressArgs, runtime: AcpRuntime, ctx: ExtensionContext, toolCallId?: string): Promise<string> {
+  // Compress is the ONLY tool that persists compression state, so it must
+  // hold the same per-session lock as wireContextTransform's pipeline:
+  // last-writer-wins saves would silently drop blocks/ref-assignments when a
+  // context event interleaves with an in-flight compress.
+  const release = await runtime.acquireLock(ctx.sessionManager.getSessionId());
+  try {
+    return await handleCompressLocked(args, runtime, ctx, toolCallId);
+  } finally {
+    release();
+  }
+}
+
+async function handleCompressLocked(args: CompressArgs, runtime: AcpRuntime, ctx: ExtensionContext, toolCallId?: string): Promise<string> {
   const maybeRanges = normalizeRanges(args.content);
   // Argument errors throw (not return): pi-agent-core only sets isError:true
   // on THROWN tool errors, and the retry nudge keys off isError. A returned
@@ -147,15 +160,16 @@ async function handleCompress(args: CompressArgs, runtime: AcpRuntime, ctx: Exte
   // Sent-view arbitration — the same scale as the context transform and
   // acp_status (see src/index.ts): never the session-tree tokenCount.
   const modelId = (ctx.model as { id?: string } | undefined)?.id ?? "default";
+  const sid = ctx.sessionManager.getSessionId();
   const systemPromptText = getSystemPromptText(ctx);
   const systemPromptTokens = systemPromptText ? defaultCountTokens(systemPromptText) : 0;
   const sentTokens = estimateTokens(coreMessages, collectCoveredMessageIds(initialState)) + systemPromptTokens;
-  const turn = runtime.core.processTurn({
+  const turn = runtime.runInCountScope(sid, () => runtime.core.processTurn({
     messages: coreMessages,
     state: initialState,
     config,
     tokenCount: calibrateTokens(sentTokens, runtime.density.densityFor(modelId)),
-  });
+  }));
   const state = turn.state;
   const messages = turn.messages;
   // Display-layer density alignment (doc §3.3): beforeTokens is calibrated to
@@ -205,12 +219,12 @@ async function handleCompress(args: CompressArgs, runtime: AcpRuntime, ctx: Exte
   // (post-processTurn view: visible text + every active block's summary anchor
   // + ref-tag overhead), so "X → Y (~Z reclaimed)" compares like-for-like —
   // including the new block's own summary, which the model will pay for next.
-  const afterTurn = runtime.core.processTurn({
+  const afterTurn = runtime.runInCountScope(sid, () => runtime.core.processTurn({
     messages: coreMessages,
     state: applied.state,
     config,
     tokenCount: calibrateTokens(sentTokens, density),
-  });
+  }));
   const afterTokens = calibrateTokens(estimateTokens(afterTurn.messages, collectCoveredMessageIds(applied.state)), density);
   const reclaimed = Math.max(0, beforeTokens - afterTokens);
 

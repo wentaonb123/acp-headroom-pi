@@ -76,3 +76,15 @@ test("invalidateHealth clears both caches", async () => {
 		await proxy.close();
 	}
 });
+
+test("health verdicts are keyed per origin — one outage never poisons another URL", async () => {
+	const down = await startFlakyProxy(Number.MAX_SAFE_INTEGER);
+	const up = await startFlakyProxy(0);
+	try {
+		assert.equal(await proxyHealthy(down.url), false, "origin A confirmed down");
+		assert.equal(await proxyHealthy(up.url), true, "origin B probed independently, unaffected by A's negative cache");
+		assert.equal(await proxyHealthy(down.url), false);
+	} finally {
+		await Promise.all([down.close(), up.close()]);
+	}
+});

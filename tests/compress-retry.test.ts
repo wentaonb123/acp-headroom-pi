@@ -97,57 +97,57 @@ test("noteCompressOutcomes: counts, caps, resets on success, resets per turn, ne
   const success = (id: string) => ({ toolCallId: id, isError: false, success: true });
   const neutral = (id: string) => ({ toolCallId: id, isError: false, success: false });
 
-  let r = rt.noteCompressOutcomes("u1", [fail("t0")]);
+  let r = rt.noteCompressOutcomes("s1", "u1", [fail("t0")]);
   assert.equal(r.count, 1);
   assert.equal(r.retryFor, "t0");
   assert.equal(r.cappedNow, false);
 
   // idempotent re-fire (same toolCallIds): count frozen, prompt persists
-  r = rt.noteCompressOutcomes("u1", [fail("t0")]);
+  r = rt.noteCompressOutcomes("s1", "u1", [fail("t0")]);
   assert.equal(r.count, 1, "no double count on re-fire");
   assert.equal(r.retryFor, "t0", "retry prompt persists while newest outcome is a failure");
 
   // neutral outcome: no reset, no prompt (latest is not an error)
-  r = rt.noteCompressOutcomes("u1", [fail("t0"), neutral("n1")]);
+  r = rt.noteCompressOutcomes("s1", "u1", [fail("t0"), neutral("n1")]);
   assert.equal(r.count, 1, "neutral does not reset the counter");
   assert.equal(r.retryFor, null, "neutral as newest outcome does not prompt");
 
   // a NEW failure after a neutral one: attempt 2, not 1 — neutral cannot
   // bypass the cap by resetting between failures
-  r = rt.noteCompressOutcomes("u1", [fail("t0"), neutral("n1"), fail("t9")]);
+  r = rt.noteCompressOutcomes("s1", "u1", [fail("t0"), neutral("n1"), fail("t9")]);
   assert.equal(r.count, 2);
   assert.equal(r.retryFor, "t9");
 
   // third distinct failure → cap: no more retry prompt, cappedNow fires once
-  r = rt.noteCompressOutcomes("u1", [fail("t0"), neutral("n1"), fail("t9"), fail("tc")]);
+  r = rt.noteCompressOutcomes("s1", "u1", [fail("t0"), neutral("n1"), fail("t9"), fail("tc")]);
   assert.equal(r.count, 3);
   assert.equal(r.retryFor, null, "capped: no retry prompt after MAX attempts");
   assert.equal(r.cappedNow, true);
-  r = rt.noteCompressOutcomes("u1", [fail("t0"), neutral("n1"), fail("t9"), fail("tc")]);
+  r = rt.noteCompressOutcomes("s1", "u1", [fail("t0"), neutral("n1"), fail("t9"), fail("tc")]);
   assert.equal(r.cappedNow, false, "cap notification is one-shot");
   assert.equal(MAX_COMPRESS_ATTEMPTS, 3);
 
   // success resets the counter
-  r = rt.noteCompressOutcomes("u1", [fail("t0"), neutral("n1"), fail("t9"), fail("tc"), success("ts")]);
+  r = rt.noteCompressOutcomes("s1", "u1", [fail("t0"), neutral("n1"), fail("t9"), fail("tc"), success("ts")]);
   assert.equal(r.count, 0);
   assert.equal(r.retryFor, null);
 
   // a NEW failure after success prompts again (fresh attempt cycle)
-  r = rt.noteCompressOutcomes("u1", [fail("t0"), neutral("n1"), fail("t9"), fail("tc"), success("ts"), fail("td")]);
+  r = rt.noteCompressOutcomes("s1", "u1", [fail("t0"), neutral("n1"), fail("t9"), fail("tc"), success("ts"), fail("td")]);
   assert.equal(r.count, 1);
   assert.equal(r.retryFor, "td");
 
   // new user turn → fresh counter even without a success in between
-  r = rt.noteCompressOutcomes("u1", [fail("t0"), neutral("n1"), fail("t9"), fail("tc"), success("ts"), fail("td"), fail("te"), fail("tf")]);
+  r = rt.noteCompressOutcomes("s1", "u1", [fail("t0"), neutral("n1"), fail("t9"), fail("tc"), success("ts"), fail("td"), fail("te"), fail("tf")]);
   assert.equal(r.count, 3, "back at cap");
-  r = rt.noteCompressOutcomes("u2", [fail("x0")]);
+  r = rt.noteCompressOutcomes("s1", "u2", [fail("x0")]);
   assert.equal(r.count, 1);
   assert.equal(r.retryFor, "x0");
 
   // defense in depth: a deduped stale failure with a reset counter must NOT
   // produce a prompt (the "attempt 0 of 3" bug — caller scoping prevents the
   // situation, the count>=1 guard nails it shut)
-  r = rt.noteCompressOutcomes("u3", [fail("x0")]);
+  r = rt.noteCompressOutcomes("s1", "u3", [fail("x0")]);
   assert.equal(r.count, 0, "stale id deduped, count stays 0 after turn change");
   assert.equal(r.retryFor, null, "no prompt without a counted failure in this turn");
 });
@@ -341,24 +341,24 @@ test("noteCompressOutcomes: no-op panels advance the counter and are retry-eligi
   const rt = createRuntime({});
   const noop = (id: string) => ({ toolCallId: id, isError: false, success: false, noop: true });
 
-  let r = rt.noteCompressOutcomes("u1", [noop("t0")]);
+  let r = rt.noteCompressOutcomes("s1", "u1", [noop("t0")]);
   assert.equal(r.count, 1);
   assert.equal(r.retryFor, "t0", "no-op is retry-eligible: model gets corrective guidance");
 
-  r = rt.noteCompressOutcomes("u1", [noop("t0"), noop("t1")]);
+  r = rt.noteCompressOutcomes("s1", "u1", [noop("t0"), noop("t1")]);
   assert.equal(r.count, 2);
 
-  r = rt.noteCompressOutcomes("u1", [noop("t0"), noop("t1"), noop("t2")]);
+  r = rt.noteCompressOutcomes("s1", "u1", [noop("t0"), noop("t1"), noop("t2")]);
   assert.equal(r.count, 3);
   assert.equal(r.retryFor, null, "capped after 3 no-ops");
   assert.equal(r.cappedNow, true);
-  assert.equal(rt.compressRetryCappedFor("u1"), true, "capped state is queryable per turn");
-  assert.equal(rt.compressRetryCappedFor("u2"), false, "other turns are unaffected");
+  assert.equal(rt.compressRetryCappedFor("s1", "u1"), true, "capped state is queryable per turn");
+  assert.equal(rt.compressRetryCappedFor("s1", "u2"), false, "other turns are unaffected");
 
   const success = (id: string) => ({ toolCallId: id, isError: false, success: true, noop: false });
-  r = rt.noteCompressOutcomes("u1", [noop("t0"), noop("t1"), noop("t2"), success("ts")]);
+  r = rt.noteCompressOutcomes("s1", "u1", [noop("t0"), noop("t1"), noop("t2"), success("ts")]);
   assert.equal(r.count, 0, "genuine success lifts the cap");
-  assert.equal(rt.compressRetryCappedFor("u1"), false);
+  assert.equal(rt.compressRetryCappedFor("s1", "u1"), false);
 });
 
 test("no-op compress toolResult triggers the retry nudge and caps at 3 (integration)", async () => {

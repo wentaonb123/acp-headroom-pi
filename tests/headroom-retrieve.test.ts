@@ -92,3 +92,23 @@ test("invalid hash and unreachable proxy both return null", async () => {
 		await miss.close();
 	}
 });
+
+test("unknown response shape returns null instead of leaking metadata JSON", async () => {
+	const freshHash = "b2c3d4e5f6a1b2c3d4e5f6a1"; // no local backup for this one
+	let hits = 0;
+	const server: Server = createServer((_req, res) => {
+		hits += 1;
+		res.writeHead(200, { "content-type": "application/json" });
+		// A future/foreign proxy that drops both original_content and content.
+		res.end(JSON.stringify({ hash: freshHash, original_tokens: 12, retrieval_count: 3 }));
+	});
+	await new Promise<void>((done) => server.listen(0, "127.0.0.1", () => done()));
+	const addr = server.address() as { port: number };
+	try {
+		const out = await retrieveOriginal(`http://127.0.0.1:${addr.port}`, freshHash);
+		assert.equal(out, null, "metadata dump must not be returned as content");
+	} finally {
+		server.close();
+		void hits;
+	}
+});

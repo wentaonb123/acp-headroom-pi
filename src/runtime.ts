@@ -1,4 +1,5 @@
 import type { ExtensionContext, SessionEntry, SessionMessageEntry } from "@earendil-works/pi-coding-agent";
+import { AsyncLocalStorage } from "node:async_hooks";
 import {
   createCore,
   defaultCountTokens,
@@ -53,7 +54,11 @@ export interface AcpRuntime {
   store: SessionStateStore;
   density: DensityEstimator;
   /** 设置 countTokens 闭包使用的 modelId（每轮 context 事件调用）。 */
-  setCountModel(modelId: string): void;
+  setCountModel(sid: string, modelId: string): void;
+  /** Run fn inside this session's count-model scope (AsyncLocalStorage):
+   *  every kernel countTokens call during synchronous fn execution resolves
+   *  the session's density-calibrated model. */
+  runInCountScope<T>(sid: string, fn: () => T): T;
   /** Record this session's active block ids for the current context round;
    *  returns true when a new active block appeared since the previous round
    *  (i.e. a compress happened out-of-band — blocks are created by the
@@ -75,11 +80,11 @@ export interface AcpRuntime {
    *  text → neutral (count unchanged). Returns the failure count, the
    *  toolCallId of the newest failure that still needs a retry prompt (null
    *  when none, capped, or count 0), and whether the cap was just reached. */
-  noteCompressOutcomes(turnKey: string, outcomes: ReadonlyArray<{ toolCallId: string; isError: boolean; success: boolean; noop?: boolean }>): { count: number; retryFor: string | null; cappedNow: boolean };
+  noteCompressOutcomes(sid: string, turnKey: string, outcomes: ReadonlyArray<{ toolCallId: string; isError: boolean; success: boolean; noop?: boolean }>): { count: number; retryFor: string | null; cappedNow: boolean };
   /** True when this turn already burned MAX_COMPRESS_ATTEMPTS failed/no-op
    *  compress calls — used to stop re-injecting the (dedup-exempt) emergency
    *  nudge that would otherwise keep looping no-op compressions (issue #6). */
-  compressRetryCappedFor(turnKey: string): boolean;
+  compressRetryCappedFor(sid: string, turnKey: string): boolean;
   clearNudgeTracking(): void;
   clearCompressRetryTracking(): void;
   liveContextLimit(ctx: ExtensionContext): number;
@@ -221,29 +226,46 @@ function sameNonTextBlocks(a: unknown, b: unknown): boolean {
   }
 }
 
-function pruneOrphanRefs(state: CompressionState, messages: ReturnType<typeof entriesToCoreMessages>): void {
+/** Returns a CLONE of `state` with orphan refs pruned. The caller's cache
+ *  slot must not be mutated in place: tool paths (decompress/search/status)
+ *  run this against the cached object, and an in-place mutation desyncs the
+ *  in-memory cache from the persisted file — deleted refs resurrect after
+ *  restart, and read-only tools invisibly rewrite boundary-resolution state. */
+function pruneOrphanRefs(state: CompressionState, messages: ReturnType<typeof entriesToCoreMessages>): CompressionState {
   const retainedRawIds = new Set(messages.map((message) => message.id));
   for (const block of state.blocks) {
     for (const rawId of [...block.directMessageIds, ...block.effectiveMessageIds]) retainedRawIds.add(rawId);
   }
-  for (const [rawId, ref] of Object.entries(state.messageRefs.byRaw)) {
+  const byRaw = { ...state.messageRefs.byRaw };
+  const byRef = { ...state.messageRefs.byRef };
+  for (const [rawId, ref] of Object.entries(byRaw)) {
     if (retainedRawIds.has(rawId)) continue;
-    delete state.messageRefs.byRaw[rawId];
-    if (state.messageRefs.byRef[ref] === rawId) delete state.messageRefs.byRef[ref];
+    delete byRaw[rawId];
+    if (byRef[ref] === rawId) delete byRef[ref];
   }
-  for (const [ref, rawId] of Object.entries(state.messageRefs.byRef)) {
-    if (!retainedRawIds.has(rawId)) delete state.messageRefs.byRef[ref];
+  for (const [ref, rawId] of Object.entries(byRef)) {
+    if (!retainedRawIds.has(rawId)) delete byRef[ref];
   }
+  return { ...state, messageRefs: { ...state.messageRefs, byRaw, byRef } };
 }
 /** Max FAILED compress calls that get a retry prompt per user turn. */
 export const MAX_COMPRESS_ATTEMPTS = 3;
 
 export function createRuntime(adapter: AdapterConfig): AcpRuntime {
   const density = new DensityEstimator();
-  let countModelId = "default";
+  // Per-session count-model scope. The kernel's countTokens closure carries
+  // no session identity, but processTurn runs synchronously inside a handler
+  // whose async chain was entered via runInCountScope — AsyncLocalStorage
+  // keeps concurrent sessions' density lookups from cross-contaminating even
+  // when their context events interleave at await boundaries.
+  const countModelsBySid = new Map<string, string>();
+  const countScope = new AsyncLocalStorage<string>();
   const core = createCore({
     // 密度校准版 countTokens（Phase 2）：默认回落 defaultCountTokens（density=1）
-    countTokens: (text) => density.estimateWithDensity(countModelId, text),
+    countTokens: (text) => {
+      const sid = countScope.getStore();
+      return density.estimateWithDensity((sid !== undefined && countModelsBySid.get(sid)) || "default", text);
+    },
   });
   const store = new SessionStateStore();
   const lastActiveBlockIds = new Map<string, Set<string>>();
@@ -255,6 +277,17 @@ export function createRuntime(adapter: AdapterConfig): AcpRuntime {
   const nudgeShownTurns = new Set<string>();
   // Per-session overflow self-heal state (learned window + armed emergency).
   const overflowEpisodes = new Map<string, OverflowEpisode>();
+  // Failure-triggered compress retry counters, per session (was a single
+  // process-wide slot that concurrent sessions reset for each other).
+  interface CompressFailState { turnKey: string | null; count: number; }
+  const compressFailBySid = new Map<string, CompressFailState>();
+  const compressOutcomeSeen = new Set<string>();
+
+  function compressFailFor(sid: string): CompressFailState {
+    let st = compressFailBySid.get(sid);
+    if (!st) { st = { turnKey: null, count: 0 }; compressFailBySid.set(sid, st); }
+    return st;
+  }
   function overflowFor(sid: string): OverflowEpisode {
     let ep = overflowEpisodes.get(sid);
     if (!ep) { ep = new OverflowEpisode(); overflowEpisodes.set(sid, ep); }
@@ -285,24 +318,22 @@ export function createRuntime(adapter: AdapterConfig): AcpRuntime {
   // only CURRENT-turn outcomes, so stale failures never re-prompt and the cap
   // is always reachable; success resets the counter, neutral outcomes
   // (non-error text that is not a success panel) leave it frozen so mixed
-  // failure modes cannot bypass the cap.
-  const compressOutcomeSeen = new Set<string>();
-  let compressFailTurnKey: string | null = null;
-  let compressFailCount = 0;
-
-  function noteCompressOutcomes(turnKey: string, outcomes: ReadonlyArray<{ toolCallId: string; isError: boolean; success: boolean; noop?: boolean }>): { count: number; retryFor: string | null; cappedNow: boolean } {
-    if (compressFailTurnKey !== turnKey) {
-      compressFailTurnKey = turnKey;
-      compressFailCount = 0;
+  // failure modes cannot bypass the cap. State is per session — a shared slot
+  // let concurrent sessions reset each other's counters.
+  function noteCompressOutcomes(sid: string, turnKey: string, outcomes: ReadonlyArray<{ toolCallId: string; isError: boolean; success: boolean; noop?: boolean }>): { count: number; retryFor: string | null; cappedNow: boolean } {
+    const st = compressFailFor(sid);
+    if (st.turnKey !== turnKey) {
+      st.turnKey = turnKey;
+      st.count = 0;
     }
-    const prevCount = compressFailCount;
+    const prevCount = st.count;
     for (const o of outcomes) {
       if (compressOutcomeSeen.has(o.toolCallId)) continue;
       compressOutcomeSeen.add(o.toolCallId);
       if (o.isError || o.noop === true) {
-        compressFailCount += 1;
+        st.count += 1;
       } else if (o.success) {
-        compressFailCount = 0;
+        st.count = 0;
       }
       // neutral: counter untouched
     }
@@ -310,28 +341,35 @@ export function createRuntime(adapter: AdapterConfig): AcpRuntime {
     // count >= 1 guards against a deduped stale failure sliding in with a
     // reset-to-0 counter (defense in depth; the caller's turn scoping already
     // prevents it — an "attempt 0 of 3" prompt must be impossible).
-    const retryFor = latest && (latest.isError || latest.noop === true) && compressFailCount >= 1 && compressFailCount < MAX_COMPRESS_ATTEMPTS ? latest.toolCallId : null;
-    const cappedNow = compressFailCount >= MAX_COMPRESS_ATTEMPTS && prevCount < MAX_COMPRESS_ATTEMPTS;
-    return { count: compressFailCount, retryFor, cappedNow };
+    const retryFor = latest && (latest.isError || latest.noop === true) && st.count >= 1 && st.count < MAX_COMPRESS_ATTEMPTS ? latest.toolCallId : null;
+    const cappedNow = st.count >= MAX_COMPRESS_ATTEMPTS && prevCount < MAX_COMPRESS_ATTEMPTS;
+    return { count: st.count, retryFor, cappedNow };
   }
 
-  function compressRetryCappedFor(turnKey: string): boolean {
-    return compressFailTurnKey === turnKey && compressFailCount >= MAX_COMPRESS_ATTEMPTS;
+  function compressRetryCappedFor(sid: string, turnKey: string): boolean {
+    const st = compressFailBySid.get(sid);
+    return st !== undefined && st.turnKey === turnKey && st.count >= MAX_COMPRESS_ATTEMPTS;
   }
 
   function clearCompressRetryTracking(): void {
     compressOutcomeSeen.clear();
-    compressFailTurnKey = null;
-    compressFailCount = 0;
+    compressFailBySid.clear();
   }
 
   async function acquireLock(sid: string): Promise<() => void> {
     const prev = locks.get(sid) ?? Promise.resolve();
     let release!: () => void;
-    const next = new Promise<void>((resolve) => { release = () => { locks.delete(sid); resolve(); }; });
-    locks.set(sid, prev.then(() => next));
+    const next = new Promise<void>((resolve) => { release = () => resolve(); });
+    const mine = prev.then(() => next);
+    locks.set(sid, mine);
     await prev;
-    return release;
+    // Delete only if WE are still the registered entry: an unconditional
+    // delete would remove a later waiter's promise, letting a third caller
+    // barge in concurrently with the waiter it dispossessed.
+    return () => {
+      if (locks.get(sid) === mine) locks.delete(sid);
+      release();
+    };
   }
 
   function liveContextLimit(ctx: ExtensionContext): number {
@@ -372,7 +410,9 @@ export function createRuntime(adapter: AdapterConfig): AcpRuntime {
     const sm = ctx.sessionManager;
     const sessionFile = sm.getSessionFile() ?? undefined;
     const sessionId = sm.getSessionId();
-    const state = await store.load(sessionFile, sessionId);
+    // `let` — the tool path (liveMessages === undefined) rebinds to a pruned
+    // CLONE; the cached object itself is never mutated (see pruneOrphanRefs).
+    let state = await store.load(sessionFile, sessionId);
     const entries = readContextEntries(sm);
     // omp fires the context event BEFORE the current user message is persisted
     // to the session branch (its agent-loop emits message_end only after
@@ -390,7 +430,7 @@ export function createRuntime(adapter: AdapterConfig): AcpRuntime {
       return { state, coreMessages, entries: merged };
     }
     const coreMessages = entriesToCoreMessages(entries);
-    if (liveMessages === undefined) pruneOrphanRefs(state, coreMessages);
+    if (liveMessages === undefined) state = pruneOrphanRefs(state, coreMessages);
     return { state, coreMessages, entries };
   }
 
@@ -408,6 +448,8 @@ export function createRuntime(adapter: AdapterConfig): AcpRuntime {
   }
   function clearSessionTracking(sid: string): void {
     lastActiveBlockIds.delete(sid);
+    countModelsBySid.delete(sid);
+    compressFailBySid.delete(sid);
   }
 
-  return { core, store, density, setCountModel: (m) => { countModelId = m; }, noteActiveBlocks, clearSessionTracking, get adapter() { return adapterRef; }, setAdapter: (a) => { adapterRef = a; }, get prompts() { return promptsRef; }, setPrompts: (p) => { promptsRef = p; }, markNudgeShown: (k) => { nudgeShownTurns.add(k); }, nudgeShownFor: (k) => nudgeShownTurns.has(k), clearNudgeTracking: () => { nudgeShownTurns.clear(); }, noteCompressOutcomes, compressRetryCappedFor, clearCompressRetryTracking, liveContextLimit, configFor, reloadConfig, stateFor, save, acquireLock, overflowFor, overflowDrop, throttleFor, throttleDrop };}
+  return { core, store, density, setCountModel: (sid, modelId) => { countModelsBySid.set(sid, modelId); }, runInCountScope: <T,>(sid: string, fn: () => T): T => countScope.run(sid, fn), noteActiveBlocks, clearSessionTracking, get adapter() { return adapterRef; }, setAdapter: (a) => { adapterRef = a; }, get prompts() { return promptsRef; }, setPrompts: (p) => { promptsRef = p; }, markNudgeShown: (k) => { nudgeShownTurns.add(k); }, nudgeShownFor: (k) => nudgeShownTurns.has(k), clearNudgeTracking: () => { nudgeShownTurns.clear(); }, noteCompressOutcomes, compressRetryCappedFor, clearCompressRetryTracking, liveContextLimit, configFor, reloadConfig, stateFor, save, acquireLock, overflowFor, overflowDrop, throttleFor, throttleDrop };}
