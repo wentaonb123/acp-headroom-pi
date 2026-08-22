@@ -7,16 +7,17 @@ import { join } from "node:path";
 import { retrieveOriginal, saveOriginals } from "../src/headroom/client.js";
 
 const HASH = "a1b2c3d4e5f6a1b2c3d4e5f6";
+const SHORT_HASH = "9828918e3958"; // SmartCrusher Rust row-drop path emits SHA-256[:12]
 
 /** Serves the REAL /v1/retrieve response shape (server.py ccr_retrieve_get). */
 function startFakeProxy(original: string): Promise<{ url: string; close: () => Promise<void>; hits: () => number }> {
 	let hits = 0;
 	const server: Server = createServer((req, res) => {
-		if (req.url === `/v1/retrieve/${HASH}`) {
+		if (req.url === `/v1/retrieve/${HASH}` || req.url === `/v1/retrieve/${SHORT_HASH}`) {
 			hits += 1;
 			res.writeHead(200, { "content-type": "application/json" });
 			res.end(JSON.stringify({
-				hash: HASH,
+				hash: req.url.split("/").pop(),
 				original_content: original,
 				original_tokens: Math.ceil(original.length / 4),
 				original_item_count: 42,
@@ -59,6 +60,18 @@ test("retrieveOriginal parses the proxy's original_content field", async () => {
 		const out = await retrieveOriginal(proxy.url, HASH);
 		assert.equal(out, "ORIGINAL PAYLOAD TEXT");
 		assert.equal(proxy.hits(), 1);
+	} finally {
+		await proxy.close();
+	}
+});
+
+test("12-hex SmartCrusher row-drop hashes are valid retrieval keys and backup targets", async () => {
+	const proxy = await startFakeProxy("ROW-DROP ORIGINAL");
+	try {
+		const out = await retrieveOriginal(proxy.url, SHORT_HASH);
+		assert.equal(out, "ROW-DROP ORIGINAL");
+		await saveOriginals([SHORT_HASH], "ROW-DROP BACKUP");
+		assert.equal(await retrieveOriginal("http://127.0.0.1:9", SHORT_HASH), "ROW-DROP BACKUP");
 	} finally {
 		await proxy.close();
 	}

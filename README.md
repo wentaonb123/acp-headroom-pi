@@ -29,7 +29,7 @@ pi install npm:acp-headroom-pi
 
 ## 工作方式
 
-1. **Headroom 阶段**：每次 LLM 调用前（pi 的 `context` 事件），超过阈值的历史 `toolResult` 通过 `POST /v1/compress`（`mode=ccr`）逐条压缩。替换文本自带 CCR 标记（24 位 hex hash），原文留在会话日志不动。
+1. **Headroom 阶段**：每次 LLM 调用前（pi 的 `context` 事件），超过阈值的历史 `toolResult` 通过 `POST /v1/compress`（`mode=ccr`）逐条压缩。替换文本自带 CCR 标记（12 或 24 位 hex hash），原文留在会话日志不动。
 2. **本地 CCR 兜底**：压缩成功时原文同步落盘 `~/.pi/acp-headroom/ccr/<hash>.txt`，不受代理 ~30 分钟 TTL 限制。
 3. **下游一致**：token 计数、nudge 阈值、ACP 摘要压缩看到的都是瘦身后视图；压缩文本经 pi 的 kernel-body 变异通道自动流达最终消息数组。
 4. **找回原文**：模型对标记里的 hash 调用 `headroom_retrieve({ hash })`——先查本地磁盘，再查代理 `/v1/retrieve/{hash}`。

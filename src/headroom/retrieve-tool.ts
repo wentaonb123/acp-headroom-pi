@@ -5,7 +5,7 @@ import { resolveHeadroom } from "./config.js";
 import { isValidHash, retrieveOriginal } from "./client.js";
 
 const RetrieveParams = Type.Object({
-	hash: Type.String({ description: "The 24-character hex hash from a [headroom] compression marker (hash=...)." }),
+	hash: Type.String({ description: "The hex hash from a Headroom compression marker (12 or 24 characters, e.g. hash=... or <<ccr:HASH,...>>)." }),
 });
 
 type RetrieveArgs = Static<typeof RetrieveParams>;
@@ -16,7 +16,7 @@ export function makeRetrieveTool(getAdapter: () => AdapterConfig): ToolDefinitio
 		label: "Headroom Retrieve",
 		description:
 			"Retrieve the original, uncompressed content behind a Headroom compression marker. " +
-			"Pass the hash shown in the marker. Use when the compressed view is missing detail you need.",
+			"Pass the hash shown in the marker (12 or 24 hex characters). Use when the compressed view is missing detail you need.",
 		promptSnippet: 'headroom_retrieve({ hash: "<24-hex hash>" })',
 		promptGuidelines: [
 			"Call when a compressed tool output references a hash and you need the full original text.",
@@ -27,7 +27,7 @@ export function makeRetrieveTool(getAdapter: () => AdapterConfig): ToolDefinitio
 			const cfg = resolveHeadroom(getAdapter());
 			const hash = (params as RetrieveArgs).hash?.trim() ?? "";
 			if (!isValidHash(hash)) {
-				throw new Error("Invalid hash format: expected 24 hex characters, e.g. headroom_retrieve({ hash: \"a1b2c3d4e5f6a1b2c3d4e5f6\" }).");
+				throw new Error("Invalid hash format: expected 12-24 hex characters (markers carry 12 or 24), e.g. headroom_retrieve({ hash: \"a1b2c3d4e5f6\" }).");
 			}
 			const original = await retrieveOriginal(cfg.proxyUrl, hash);
 			if (original === null) {

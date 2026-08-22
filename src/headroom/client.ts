@@ -159,8 +159,11 @@ function contentToText(content: unknown): string | null {
 	return null;
 }
 
+/** Markers carry 24-hex (store default SHA-256[:24]) or 12-hex (SmartCrusher's
+ *  Rust row-drop path, mirrored verbatim as the store key — see
+ *  compression_store.store explicit_hash docs). */
 export function isValidHash(hash: string): boolean {
-	return /^[a-f0-9]{24}$/i.test(hash);
+	return /^[a-f0-9]{12,24}$/i.test(hash);
 }
 
 // --- CCR disk backup: originals survive the proxy's TTL (~30 min default) ---
