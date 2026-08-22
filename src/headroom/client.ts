@@ -205,10 +205,12 @@ export async function retrieveOriginal(baseUrl: string, hash: string, timeoutMs 
 		const data: unknown = await resp.json();
 		if (typeof data === "string") return data;
 		if (data && typeof data === "object") {
-			const content = (data as { content?: unknown }).content;
-			if (typeof content === "string") return content;
-			const text = contentToText(content) ?? JSON.stringify(data);
-			return text;
+			// Proxy response shape (server.py ccr_retrieve_get):
+			// { hash, original_content, original_tokens, tool_name, ... }
+			const obj = data as { original_content?: unknown; content?: unknown };
+			if (typeof obj.original_content === "string") return obj.original_content;
+			if (typeof obj.content === "string") return obj.content;
+			return contentToText(obj.content) ?? JSON.stringify(data);
 		}
 		return null;
 	} catch {
