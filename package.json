@@ -1,6 +1,6 @@
 {
 	"name": "acp-headroom-pi",
-	"version": "0.1.1",
+	"version": "0.1.2",
 	"description": "ACP + Headroom for the Pi coding agent. Model-driven context management fused with mechanical tool-output compression via a local Headroom proxy.",
 	"main": "dist/index.js",
 	"types": "dist/index.d.ts",
