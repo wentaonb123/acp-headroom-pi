@@ -120,12 +120,22 @@ function wireSessionLifecycle(pi: ExtensionAPI, runtime: AcpRuntime, headroom: H
       } catch (e) {
         logWarn("headroom", { event: "register-tool-failed", error: e instanceof Error ? e.message : String(e) });
       }
-      // Fire-and-forget availability probe: auto-starts the proxy when
-      // configured; a miss is logged (and surfaced once per lapse at the
-      // next context event) without blocking session startup.
+      // Background availability probe: auto-starts the proxy when possible,
+      // then surfaces an install hint once when headroom is absent entirely.
+      // Runs outside the request path so a missing binary never blocks the
+      // first LLM call.
       void import("./headroom/client.js").then(async ({ proxyHealthy, startProxy }) => {
         const cfg = resolveHeadroom(runtime.adapter);
-        if (!(await proxyHealthy(cfg.proxyUrl)) && cfg.autoStart) await startProxy(cfg.proxyUrl);
+        // Claim the spawn slot BEFORE probing so a context event racing this
+        // probe fast-fails instead of spawning a duplicate proxy.
+        if (cfg.autoStart) headroom.markProxyAttempted();
+        const ok = (await proxyHealthy(cfg.proxyUrl)) || (cfg.autoStart && (await startProxy(cfg.proxyUrl)));
+        if (!ok && ctx.hasUI) {
+          ctx.ui.notify(
+            '[ACP] Headroom proxy not found — mechanical tool-output compression is bypassed (ACP summaries unaffected). ' +
+              'Install: uv tool install --python 3.13 "headroom-ai[proxy]"',
+          );
+        }
       }).catch(() => {});
     }
     // Bind the TUI status widget for async delegates. The widget reads the

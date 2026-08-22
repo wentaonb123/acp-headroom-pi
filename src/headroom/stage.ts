@@ -125,6 +125,13 @@ export class HeadroomStage {
 		return result;
 	}
 
+	/** Called by session_start after its own spawn attempt so the request-path
+	 *  ensureProxy() never blocks on startProxy polling (up to 40s when the
+	 *  binary is absent) — it only fast health-checks afterwards. */
+	markProxyAttempted(): void {
+		this.proxyTried = true;
+	}
+
 	private async ensureProxy(cfg: ResolvedHeadroomConfig): Promise<boolean> {
 		if (await proxyHealthy(cfg.proxyUrl)) return true;
 		if (cfg.autoStart && !this.proxyTried) {
