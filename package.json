@@ -27,7 +27,8 @@
 	"scripts": {
 		"test": "node --import tsx --test tests/*.test.ts",
 		"typecheck": "tsc --noEmit",
-		"build": "tsup && tsc --emitDeclarationOnly"
+		"build": "tsup && tsc --emitDeclarationOnly",
+		"prepare": "npm run build"
 	},
 	"keywords": [
 		"pi-package",
