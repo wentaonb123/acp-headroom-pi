@@ -320,7 +320,7 @@ export function createRuntime(adapter: AdapterConfig): AcpRuntime {
   // (non-error text that is not a success panel) leave it frozen so mixed
   // failure modes cannot bypass the cap. State is per session — a shared slot
   // let concurrent sessions reset each other's counters.
-  function noteCompressOutcomes(sid: string, turnKey: string, outcomes: ReadonlyArray<{ toolCallId: string; isError: boolean; success: boolean; noop?: boolean }>): { count: number; retryFor: string | null; cappedNow: boolean } {
+  function noteCompressOutcomes(sid: string, turnKey: string, outcomes: ReadonlyArray<{ toolCallId: string; isError: boolean; success: boolean; noop?: boolean; retryable?: boolean }>): { count: number; retryFor: string | null; cappedNow: boolean } {
     const st = compressFailFor(sid);
     if (st.turnKey !== turnKey) {
       st.turnKey = turnKey;
@@ -338,10 +338,17 @@ export function createRuntime(adapter: AdapterConfig): AcpRuntime {
       // neutral: counter untouched
     }
     const latest = outcomes.length > 0 ? outcomes[outcomes.length - 1] : undefined;
+    // retryable defaults to true for callers that don't classify (unit
+    // fixtures); the production caller always sets it via
+    // isTerminalCompressErrorText. Terminal failures and no-ops still COUNT
+    // toward the cap above — the issue #6 loop breaker depends on that —
+    // but they no longer trigger a forced retry prompt: the same arguments
+    // can never succeed, so re-prompting is noise.
+    const latestRetryable = latest ? (latest.retryable ?? true) : false;
     // count >= 1 guards against a deduped stale failure sliding in with a
     // reset-to-0 counter (defense in depth; the caller's turn scoping already
     // prevents it — an "attempt 0 of 3" prompt must be impossible).
-    const retryFor = latest && (latest.isError || latest.noop === true) && st.count >= 1 && st.count < MAX_COMPRESS_ATTEMPTS ? latest.toolCallId : null;
+    const retryFor = latest && (latest.isError || latest.noop === true) && latestRetryable && st.count >= 1 && st.count < MAX_COMPRESS_ATTEMPTS ? latest.toolCallId : null;
     const cappedNow = st.count >= MAX_COMPRESS_ATTEMPTS && prevCount < MAX_COMPRESS_ATTEMPTS;
     return { count: st.count, retryFor, cappedNow };
   }

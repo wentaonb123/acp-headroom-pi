@@ -115,6 +115,18 @@ export function isCompressNoopText(text: string): boolean {
   return compressPanelBlocks(text) === 0;
 }
 
+/** Terminal failure = the gate rejected the RANGES themselves (already
+ *  compressed / batch too small / inside the protected zone). Retrying the
+ *  same call can never succeed — only fresh ranges from a new acp_status
+ *  read help. Forced retry prompts for these are pure noise: observed in
+ *  production as 3x-per-turn injection loops on structurally doomed ranges,
+ *  repeating every turn while the stale recommendation persisted.
+ *  Transient failures (argument shape, JSON-encoded content) stay
+ *  retry-eligible — corrected arguments CAN succeed. */
+export function isTerminalCompressErrorText(text: string): boolean {
+  return /already compressed|nothing to do|too small|protected zone/i.test(text);
+}
+
 function tier3OnlyRewrite(newBlocks: CompressionBlock[], allBlocks: CompressionBlock[]): string[] | null {
   if (newBlocks.length === 0) return null;
   const byId = new Map(allBlocks.map((b) => [b.blockId, b]));

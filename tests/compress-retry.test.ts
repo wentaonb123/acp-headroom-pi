@@ -337,13 +337,15 @@ test("classification: 0-block panels are no-ops, not successes; >=1 block is suc
   assert.equal(isCompressNoopText(NEUTRAL_TEXT), false, "non-panels stay neutral");
 });
 
-test("noteCompressOutcomes: no-op panels advance the counter and are retry-eligible", () => {
+test("noteCompressOutcomes: explicit retryable:false counts toward the cap but never prompts", () => {
   const rt = createRuntime({});
-  const noop = (id: string) => ({ toolCallId: id, isError: false, success: false, noop: true });
+  // Production caller classifies no-op panels as NOT retryable (the same
+  // call cannot succeed); they still count so the loop breaker trips.
+  const noop = (id: string) => ({ toolCallId: id, isError: false, success: false, noop: true, retryable: false });
 
   let r = rt.noteCompressOutcomes("s1", "u1", [noop("t0")]);
   assert.equal(r.count, 1);
-  assert.equal(r.retryFor, "t0", "no-op is retry-eligible: model gets corrective guidance");
+  assert.equal(r.retryFor, null, "no-op is counted but not prompted (terminal: same call can't succeed)");
 
   r = rt.noteCompressOutcomes("s1", "u1", [noop("t0"), noop("t1")]);
   assert.equal(r.count, 2);
@@ -361,7 +363,7 @@ test("noteCompressOutcomes: no-op panels advance the counter and are retry-eligi
   assert.equal(rt.compressRetryCappedFor("s1", "u1"), false);
 });
 
-test("no-op compress toolResult triggers the retry nudge and caps at 3 (integration)", async () => {
+test("no-op compress toolResult never triggers a forced retry prompt (terminal classification)", async () => {
   const { api, handlers } = captureApi();
   createAcpExtension({ modelContextLimit: 200_000 })(api as any);
   const stateFile = "/tmp/pai-acp-retry-noop.session.json";
@@ -371,20 +373,20 @@ test("no-op compress toolResult triggers the retry nudge and caps at 3 (integrat
   const ctx = fakeCtx(() => entries, stateFile);
   await fire(handlers, ctx);
 
+  // The panel text itself already explains the skips; a forced "call again
+  // NOW" prompt for the SAME doomed refs was observed looping 3x/turn in
+  // production. New policy: count toward the cap, inject nothing.
   entries = [...entries, toolResultMsg("e2", "call_1", NOOP_PANEL, false)];
   const r1 = await fire(handlers, ctx);
-  assert.equal(retryMsgs(r1).length, 1, "no-op → corrective retry nudge");
-  assert.match(retryText(r1), /attempt 1 of 3/);
-  assert.match(retryText(r1), /already compressed/, "quotes the skip reason");
-  assert.match(retryText(r1), /acp_status/, "guides to current compressible ranges");
+  assert.equal(retryMsgs(r1).length, 0, "no-op → no forced retry prompt");
 
   entries = [...entries, toolResultMsg("e3", "call_2", NOOP_PANEL, false)];
   const r2 = await fire(handlers, ctx);
-  assert.match(retryText(r2), /attempt 2 of 3/);
+  assert.equal(retryMsgs(r2).length, 0, "still no prompt on second no-op");
 
   entries = [...entries, toolResultMsg("e4", "call_3", NOOP_PANEL, false)];
   const r3 = await fire(handlers, ctx);
-  assert.equal(retryMsgs(r3).length, 0, "third no-op → capped, no more prompts");
+  assert.equal(retryMsgs(r3).length, 0, "third no-op → capped, still nothing");
   await rm(`${stateFile}.acp.json`, { force: true });
 });
 

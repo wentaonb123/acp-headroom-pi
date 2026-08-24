@@ -4,11 +4,11 @@ import type {
   ExtensionFactory,
   SessionMessageEntry,
 } from "@earendil-works/pi-coding-agent";
-import type { CoreMessage, NudgeDecision, CompressionBlock, Prompts } from "acp-kernel";
+import type { CompressibleRange, CoreMessage, NudgeDecision, CompressionBlock, Prompts } from "acp-kernel";
 import { renderNudgeText, resolvePrompts, defaultPrompts } from "acp-kernel";
 import { type AdapterConfig, resolveDelegate } from "./config.js";
 import { createRuntime, type AcpRuntime, MAX_COMPRESS_ATTEMPTS } from "./runtime.js";
-import { makeCompressTool, isCompressSuccessText, isCompressNoopText } from "./compress-tool.js";
+import { makeCompressTool, isCompressSuccessText, isCompressNoopText, isTerminalCompressErrorText } from "./compress-tool.js";
 import { makeDecompressTool } from "./decompress-tool.js";
 import { makeSearchTool } from "./search-tool.js";
 import { makeStatusTool } from "./status-tool.js";
@@ -373,7 +373,20 @@ function wireContextTransform(pi: ExtensionAPI, runtime: AcpRuntime, headroom: H
       // Recommend only ranges the model can actually compress: a tiny
       // fragmented range in the list makes batched attempts fail atomically
       // (kernel validates the whole batch). See viableRanges in billion-context-kit.
-      turn.nudge.compressibleRanges = viableRanges(turn.nudge.compressibleRanges);
+      // Then drop ranges that went STALE between the kernel's snapshot and
+      // the model's action: refs pruned/renumbered since processTurn (stale
+      // ref → atomic batch rejection), or ranges whose tail has slid into
+      // the protected zone (the snapshot excludes protection as of
+      // processTurn, but the injected nudge itself + later messages shift
+      // the boundary before the model calls). Observed in production as
+      // every recommended range failing with "already compressed / nothing
+      // to do" turn after turn.
+      turn.nudge.compressibleRanges = filterActionableRanges(
+        viableRanges(turn.nudge.compressibleRanges),
+        entries,
+        turn.state,
+        (config as { preserveRecentMessages?: number }).preserveRecentMessages ?? 5,
+      );
       // Retry-cap circuit breaker (issue #6): emergency nudges re-inject on
       // every LLM call, so a model answering each one with a failed/no-op
       // compress call loops forever (each attempt adds protected tokens and
@@ -582,15 +595,51 @@ function turnStartIndex(entries: Array<{ type: string; message?: { role?: string
 // session would keep an old failure as the "newest outcome" forever, and the
 // per-turn counter reset would then re-prompt it with count 0 on every LLM
 // call of every later turn (review finding on 7ddd2c6).
-function collectCompressOutcomes(entries: Array<{ type: string; id: string; message?: AgentMessage }>, startIndex: number): Array<{ toolCallId: string; isError: boolean; success: boolean; noop: boolean; text: string }> {
-  const out: Array<{ toolCallId: string; isError: boolean; success: boolean; noop: boolean; text: string }> = [];
+/** Drop recommended ranges the model can no longer act on:
+ *  - either ref no longer resolves in messageRefs (pruned / renumbered since
+ *    the snapshot → the kernel rejects the whole batch atomically),
+ *  - the range's end ref has slid into the protected tail (last
+ *    preserveRecentMessages entries + the most recent user entry) by action
+ *    time. Exported for tests. */
+export function filterActionableRanges(
+  ranges: CompressibleRange[],
+  entries: Array<{ id: string; message?: { role?: string } }>,
+  state: { messageRefs?: { byRaw: Record<string, string>; byRef: Record<string, string> } } | undefined,
+  preserveRecentMessages: number,
+): CompressibleRange[] {
+  const byRaw = state?.messageRefs?.byRaw ?? {};
+  const byRef = state?.messageRefs?.byRef ?? {};
+  const protectedRefs = new Set<string>();
+  const tailN = Math.max(1, preserveRecentMessages);
+  for (const e of entries.slice(-tailN)) {
+    const ref = byRaw[e.id];
+    if (ref) protectedRefs.add(ref);
+  }
+  for (let i = entries.length - 1; i >= 0; i--) {
+    if (entries[i]!.message?.role === "user") {
+      const ref = byRaw[entries[i]!.id];
+      if (ref) protectedRefs.add(ref);
+      break;
+    }
+  }
+  return ranges.filter((r) => r.startRef in byRef && r.endRef in byRef && !protectedRefs.has(r.endRef));
+}
+
+function collectCompressOutcomes(entries: Array<{ type: string; id: string; message?: AgentMessage }>, startIndex: number): Array<{ toolCallId: string; isError: boolean; success: boolean; noop: boolean; retryable: boolean; text: string }> {
+  const out: Array<{ toolCallId: string; isError: boolean; success: boolean; noop: boolean; retryable: boolean; text: string }> = [];
   for (let i = Math.max(startIndex, -1) + 1; i < entries.length; i++) {
     const entry = entries[i]!;
     if (entry.type !== "message" || !entry.message) continue;
     const m = entry.message as { role?: string; toolName?: string; toolCallId?: string; isError?: boolean; content?: unknown };
     if (m.role !== "toolResult" || m.toolName !== "compress" || !m.toolCallId) continue;
     const text = extractText(m.content);
-    out.push({ toolCallId: m.toolCallId, isError: m.isError === true, success: m.isError !== true && isCompressSuccessText(text), noop: m.isError !== true && isCompressNoopText(text), text });
+    // Terminal gate rejections (already compressed / too small / protected
+    // zone) and no-op panels are counted as failures but never force a
+    // retry prompt — the same call cannot succeed (see
+    // isTerminalCompressErrorText). Only transient argument errors stay
+    // retry-eligible.
+    const retryable = m.isError === true && !isTerminalCompressErrorText(text);
+    out.push({ toolCallId: m.toolCallId, isError: m.isError === true, success: m.isError !== true && isCompressSuccessText(text), noop: m.isError !== true && isCompressNoopText(text), retryable, text });
   }
   return out;
 }
