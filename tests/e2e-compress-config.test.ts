@@ -86,10 +86,12 @@ test("e2e compress config: a single runtime resolves differently per model (prov
 
 test("e2e compress config: without a config file the kernel defaults apply", async () => {
     const savedHome = process.env.HOME;
+    const savedUserProfile = process.env.USERPROFILE;
     await withConfigDir(undefined, async (cwd) => {
         process.env.HOME = cwd;
+        process.env.USERPROFILE = cwd; // os.homedir() on Windows prefers USERPROFILE
         const user = await loadUserConfig(cwd);
-        assert.deepEqual(user, {}, "no acp.json anywhere (HOME + cwd) → empty user config");
+        assert.deepEqual(user, {}, "no acp.json anywhere (HOME + USERPROFILE + cwd) → empty user config");
         const runtime = createRuntime({});
         await runtime.reloadConfig(cwd);
         const cfg = runtime.configFor(ctxFor("anthropic", "claude-sonnet-4-5", 200_000));
@@ -98,6 +100,7 @@ test("e2e compress config: without a config file the kernel defaults apply", asy
         assert.equal(cfg.nudge.growthFloor, 50000, "kernel default growthFloor");
     });
     process.env.HOME = savedHome;
+    process.env.USERPROFILE = savedUserProfile;
 });
 
 // Behavioral: feed the real configFor() output into runtime.core.processTurn()
