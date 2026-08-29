@@ -116,7 +116,10 @@ export function startProxy(baseUrl: string): Promise<boolean> {
 function killProxyTree(child: ChildProcess): void {
 	try {
 		if (process.platform === "win32" && child.pid) {
-			execFile("taskkill", ["/pid", String(child.pid), "/T", "/F"], () => {});
+			// windowsHide: taskkill is a console app — without this flag its brief
+			// window flashes on screen every time pi shuts down and reclaims a
+			// spawned proxy (the reported "screen flicker on restart").
+			execFile("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true }, () => {});
 		} else {
 			child.kill();
 		}
