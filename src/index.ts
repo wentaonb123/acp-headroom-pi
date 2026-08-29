@@ -143,10 +143,20 @@ function wireSessionLifecycle(pi: ExtensionAPI, runtime: AcpRuntime, headroom: H
     // running delegates below the editor. Only the interactive TUI has a UI;
     // rpc/json/print have hasUI=false and the call is a no-op.
     delegateStatusWidget.setContext(ctx, runningRunsSnapshot);
+    // Session-start engine update hint (24h throttled, fire-and-forget):
+    // compares the installed headroom against what uv would resolve, then
+    // notifies/logs when a newer engine exists. Deliberately separate from
+    // the availability probe above — missing/outdated engines must not block
+    // the fast-path probe. Last ctx is stashed for the notifier's UI check.
+    (globalThis as Record<string, unknown>).__ACP_HEADROOM_LAST_CTX__ = ctx;
+    void import("./headroom/upgrade.js").then(({ maybeNotifyHeadroomUpdate }) =>
+      maybeNotifyHeadroomUpdate(() => runtime.adapter),
+    ).catch(() => {});
   });
   pi.on("session_shutdown", () => {
     delegateStatusWidget.dispose();
     closeLogStream();
+    (globalThis as Record<string, unknown>).__ACP_HEADROOM_LAST_CTX__ = undefined;
     // Reclaim only proxies this pi process auto-started; user-launched
     // instances are never touched (they were never added to the set).
     stopSpawnedProxies();

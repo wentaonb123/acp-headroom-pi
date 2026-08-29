@@ -78,6 +78,18 @@ pi install npm:acp-headroom-pi
 
 保持「只装一个上下文管理插件」原则：本插件已取消 pi 内置 auto-compaction，且不要再与其他改写 context 的扩展同装。卸载 billion-context-pi 与 headroom-opencode 后安装本插件。
 
+## 更新
+
+两个组件独立更新，建议顺序：headroom 引擎在前，插件在后。
+
+1. **headroom 引擎**（Python，`~/.local/bin/headroom`）：
+   - 在 pi 会话内运行 `/headroom-update`：自动停止插件拉起的代理 → `uv tool upgrade headroom-ai`（尊重你的 uv 镜像/index 配置）→ 重启代理并验证 `/health`，结束时提示插件更新命令。
+   - 本机存在手动启动的代理时命令会中止并提示先关闭（升级需替换可执行文件，Windows 下 shim 文件被占用会报 `os error 32`）。
+   - 也可跳过插件自己执行：`uv tool upgrade headroom-ai`，然后重启代理（`headroom proxy --port 8787`）。
+2. **本插件**（npm）：退出 pi 后执行 `pi update --extensions`（或 `pi update npm:acp-headroom-pi`），重新进入 pi 生效。
+
+每次启动时会自动检查一次 headroom 是否有新版本（24 小时内仅一次，仅提示不自动升级），发现新版会弹提示并写日志；可用 `acp.json` 的 `headroom.checkUpdatesOnStart: false` 关闭。查看状态：`/headroom-status`（引擎版本 + 代理健康 + 本会话压缩统计）。
+
 ## 开发
 
 ```bash

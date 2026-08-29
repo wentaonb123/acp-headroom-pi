@@ -22,6 +22,10 @@ export interface HeadroomSettings {
 	/** Try to spawn the proxy when it is not reachable at startup.
 	 *  Default: true. */
 	autoStart?: boolean;
+	/** On session start, check (throttled to once per 24h) whether the
+	 *  installed headroom engine has a newer release and surface a hint to
+	 *  run /headroom-update. Never upgrades automatically. Default: true. */
+	checkUpdatesOnStart?: boolean;
 }
 
 export interface ResolvedHeadroomConfig {
@@ -32,6 +36,7 @@ export interface ResolvedHeadroomConfig {
 	timeoutMs: number;
 	protectedTools: string[];
 	autoStart: boolean;
+	checkUpdatesOnStart: boolean;
 }
 
 /** ACP's own tools whose results are load-bearing metadata or already-lean
@@ -50,6 +55,7 @@ export const DEFAULT_HEADROOM_CONFIG: ResolvedHeadroomConfig = {
 	timeoutMs: 3000,
 	protectedTools: DEFAULT_PROTECTED_TOOLS,
 	autoStart: true,
+	checkUpdatesOnStart: true,
 };
 
 export function resolveHeadroom(adapter: AdapterConfig): ResolvedHeadroomConfig {
@@ -64,6 +70,7 @@ export function resolveHeadroom(adapter: AdapterConfig): ResolvedHeadroomConfig 
 		timeoutMs: posInt(s.timeoutMs, DEFAULT_HEADROOM_CONFIG.timeoutMs),
 		protectedTools: unique([...DEFAULT_PROTECTED_TOOLS, ...(Array.isArray(s.protectedTools) ? s.protectedTools.filter((t): t is string => typeof t === "string") : [])]),
 		autoStart: s.autoStart !== false,
+		checkUpdatesOnStart: s.checkUpdatesOnStart !== false,
 	};
 }
 

@@ -7,6 +7,10 @@ import { buildStatusPanel } from "billion-context-kit";
 import { getDelegateUsage } from "./delegate-tool.js";
 import { ensureSubagentAcpTools } from "./setup-subagent-tools.js";
 import { activeHeadroomSnapshot } from "./headroom/stage.js";
+import { resolveHeadroom } from "./headroom/config.js";
+import { runHeadroomUpgrade } from "./headroom/upgrade.js";
+import { localHeadroomVersion } from "./headroom/version.js";
+import { proxyHealthy } from "./headroom/client.js";
 
 declare const CURRENT_VERSION: string;
 
@@ -96,9 +100,43 @@ export function makeCommands(runtime: AcpRuntime): Array<{ name: string; options
         },
       },
     },
+    {
+      name: "headroom-update",
+      options: {
+        description:
+          "Check/upgrade the headroom engine (uv tool upgrade headroom-ai), restart the proxy, and verify. " +
+          "Run after pi update npm:acp-headroom-pi; the plugin itself is updated via that command. " +
+          "Manual proxies must be closed first (the upgrade replaces the executable).",
+        handler: async (_args, ctx) => ctx.ui.notify((await runHeadroomUpgrade(() => runtime.adapter)).message),
+      },
+    },
+    {
+      name: "headroom-status",
+      options: {
+        description: "Show headroom engine version, proxy health, and compression stats.",
+        handler: async (_args, ctx) => ctx.ui.notify(await headroomStatusReport(runtime)),
+      },
+    },
   ];
 }
 
+async function headroomStatusReport(runtime: AcpRuntime): Promise<string> {
+  const local = await localHeadroomVersion();
+  const hr = activeHeadroomSnapshot();
+  const cfg = resolveHeadroom(runtime.adapter);
+  const healthy = await proxyHealthy(cfg.proxyUrl);
+  const lines = [`headroom engine: ${local ?? "not found on PATH (uv tool install --python 3.13 \"headroom-ai[proxy]\")"}`];
+  lines.push(`proxy ${cfg.proxyUrl}: ${healthy ? "up" : "down"}`);
+  if (hr?.enabled) {
+    lines.push(
+      hr.stats.applied > 0
+        ? `this session: ${hr.stats.applied} tool outputs compressed · ~${formatK(hr.stats.savedTokens)} tokens saved`
+        : "this session: no tool outputs compressed yet",
+    );
+  }
+  lines.push("update: /headroom-update");
+  return lines.join("\n");
+}
 async function statusReport(runtime: AcpRuntime, ctx: ExtensionCommandContext): Promise<string> {
   const { state, coreMessages } = await runtime.stateFor(ctx);
   const config = runtime.configFor(ctx);
