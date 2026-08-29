@@ -48,6 +48,11 @@ const CACHE_MAX = 500;
 export class HeadroomStage {
 	stats: HeadroomStats = { applied: 0, savedTokens: 0 };
 	private cache = new Map<string, CacheEntry>();
+	/** Cache keys the proxy already proved uncompressible (no-op or below-gain).
+	 *  Without this, a below-gain candidate would burn a proxy round-trip on
+	 *  EVERY context event — the exact waste the rolling budget is meant to
+	 *  avoid. Same lifecycle as `cache` (cleared at CACHE_MAX + session reset). */
+	private noGain = new Set<string>();
 	private proxyTried = false;
 	private unavailableNotified = false;
 
@@ -56,6 +61,7 @@ export class HeadroomStage {
 	resetSession(): void {
 		this.stats = { applied: 0, savedTokens: 0 };
 		this.cache.clear();
+		this.noGain.clear();
 		this.proxyTried = false;
 		this.unavailableNotified = false;
 	}
@@ -94,29 +100,46 @@ export class HeadroomStage {
 
 		if (candidates.length === 0) return emptyResult();
 
-		// Latency cap: only the largest results within the per-turn budget.
-		const budget = new Set(
-			[...candidates]
-				.sort((a, b) => b.m.text!.length - a.m.text!.length)
-				.slice(0, cfg.maxPerTurn)
-				.map(({ index }) => index),
-		);
-
+		// Latency cap (rolling budget): at most cfg.maxPerTurn REAL proxy requests
+		// per round. Cache hits and known-no-gain candidates cost nothing, so the
+		// window rolls forward past them — a candidate ranked below the top-N is
+		// still compressed this round when higher-ranked ones are already known,
+		// instead of being starved forever by a fixed slice (budget no longer
+		// cuts off the tail; rounds converge through the ranked list).
 		const result: HeadroomApplyResult = { replacements: new Map(), applied: 0, savedTokens: 0, available: true };
 		// Cache key includes proxy origin + modelId: the compressed output (and
 		// its CCR hashes) belong to whichever proxy produced them, so a
 		// mid-session config change must not keep serving stale entries.
 		const cachePrefix = `${originOf(cfg.proxyUrl)}|${modelId}|`;
-		for (const { m, index } of candidates) {
-			if (!budget.has(index)) continue;
+		const ordered = [...candidates]
+			.sort((a, b) => b.m.text!.length - a.m.text!.length)
+			.map(({ m, index }) => ({ m, index, key: `${cachePrefix}${sha256(m.text!)}` }));
+		let requests = 0;
+		for (const { m, index, key } of ordered) {
+			if (requests >= cfg.maxPerTurn) break; // rest gets a later round
 			const text = m.text!;
-			const key = `${cachePrefix}${sha256(text)}`;
+			if (this.noGain.has(key)) {
+				debug.event("headroom-skip", { index, toolName: m.toolName ?? null, reason: "no-gain-known", chars: text.length });
+				continue;
+			}
 			let entry = this.cache.get(key);
 			if (!entry) {
+				requests += 1;
 				const outcome = await compressToolOutput(cfg.proxyUrl, { toolName: m.toolName ?? "", text, model: modelId, timeoutMs: cfg.timeoutMs });
-				if (!outcome || outcome.text.length >= text.length) continue;
+				if (!outcome) {
+					debug.event("headroom-skip", { index, toolName: m.toolName ?? null, reason: "proxy-noop", chars: text.length });
+					continue;
+				}
+				if (outcome.text.length >= text.length) {
+					this.noGain.add(key);
+					debug.event("headroom-skip", { index, toolName: m.toolName ?? null, reason: "below-gain", chars: text.length, outChars: outcome.text.length });
+					continue;
+				}
 				entry = { text: outcome.text, tokensBefore: outcome.tokensBefore, tokensAfter: outcome.tokensAfter, hashes: outcome.hashes };
-				if (this.cache.size >= CACHE_MAX) this.cache.clear();
+				if (this.cache.size >= CACHE_MAX) {
+					this.cache.clear();
+					this.noGain.clear();
+				}
 				this.cache.set(key, entry);
 				await saveOriginals(entry.hashes, text);
 			}
