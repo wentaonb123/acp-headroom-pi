@@ -60,22 +60,31 @@ function clearWidget(): void {
   }
 }
 
+// Footer (delegate usage + headroom state) is refreshed on this cadence
+// even when no delegate is running, so the headroom segment never freezes
+// for the rest of the session. 500ms tick ÷ 30 = 15s — the cached health
+// probe (30s TTL) makes each call effectively free.
+const FOOTER_IDLE_EVERY = 30;
+let idleFooterTicks = 0;
+
 function refresh(): void {
   if (!ui) return;
   const runs = runsSnapshot ? runsSnapshot() : [];
   if (runs.length === 0) {
-    // Empty list: clear the widget and stop the timer so an idle TUI does not
-    // tick forever. The next poke() (on a new spawn) restarts it.
+    // Empty list: clear the widget; keep the timer running at a slow cadence
+    // so the footer (delegate usage + headroom state) stays live. The next
+    // poke()/setContext() restarts full-tick mode.
     if (lastRenderKey !== "") {
       lastRenderKey = "";
       clearWidget();
     }
-    // Final accumulated usage must still be shown after the last delegate
-    // finishes, so refresh the footer before stopping the timer.
-    updateFooterStatus();
-    stopTimer();
+    idleFooterTicks += 1;
+    if (idleFooterTicks % FOOTER_IDLE_EVERY === 1) {
+      void updateFooterStatus();
+    }
     return;
   }
+  idleFooterTicks = 0;
   const sorted = [...runs].sort((a, b) => a.startedAt - b.startedAt);
   // Debounce: skip re-render if the visible state (agent + elapsed-second +
   // count + task) hasn't changed since last render. Elapsed is rounded to
