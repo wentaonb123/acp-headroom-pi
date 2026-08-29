@@ -35,6 +35,13 @@ export interface CompressSettings {
   /** Token growth threshold for soft compression nudges. Default: 50000.
    *  Maps to kernel nudge.growthFloor + nudge.growthCap. */
   nudgeGrowthTokens?: number;
+  /** Number of active tier-1 blocks that triggers tier-2 distillation nudge
+   *  (count gate, independent of token-pressure ordering). Default: 5.
+   *  Maps to kernel tiers.tier2Trigger. */
+  tier2Trigger?: number;
+  /** Number of active tier-2 blocks that triggers tier-3 condensation nudge
+   *  (count gate). Default: 10. Maps to kernel tiers.tier3Trigger. */
+  tier3Trigger?: number;
 }
 
 /** Per-provider compression overrides. Carries the same tuning fields as the
@@ -151,6 +158,8 @@ export function mergeCompress(
     maxContextLimit: model?.maxContextLimit ?? provider?.maxContextLimit ?? global?.maxContextLimit,
     emergencyThresholdPercent: model?.emergencyThresholdPercent ?? provider?.emergencyThresholdPercent ?? global?.emergencyThresholdPercent,
     nudgeGrowthTokens: model?.nudgeGrowthTokens ?? provider?.nudgeGrowthTokens ?? global?.nudgeGrowthTokens,
+    tier2Trigger: model?.tier2Trigger ?? provider?.tier2Trigger ?? global?.tier2Trigger,
+    tier3Trigger: model?.tier3Trigger ?? provider?.tier3Trigger ?? global?.tier3Trigger,
   };
 }
 
@@ -198,6 +207,8 @@ export function resolveConfig(adapter: AdapterConfig, liveContextLimit: number, 
     config.nudge.growthFloor = c.nudgeGrowthTokens;
     config.nudge.growthCap = c.nudgeGrowthTokens;
   }
+  if (c.tier2Trigger !== undefined) config.tiers.tier2Trigger = c.tier2Trigger;
+  if (c.tier3Trigger !== undefined) config.tiers.tier3Trigger = c.tier3Trigger;
   return config;
 }
 

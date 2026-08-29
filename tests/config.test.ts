@@ -199,3 +199,22 @@ test("resolveConfig without provider/modelId behaves as before (global only)", (
   const cfg = resolveConfig({ compress: { maxContextLimit: "80%" } }, 1_000_000);
   assert.equal(cfg.nudge.maxContextLimitPct, 0.8);
 });
+
+test("resolveConfig maps tier2Trigger/tier3Trigger into kernel tiers", () => {
+  const cfg = resolveConfig({ compress: { tier2Trigger: 10, tier3Trigger: 25 } }, 200_000, "anthropic", "claude-sonnet-4");
+  assert.equal(cfg.tiers.tier2Trigger, 10);
+  assert.equal(cfg.tiers.tier3Trigger, 25);
+  assert.equal(cfg.tiers.enabled, true, "other tier fields keep kernel defaults");
+});
+
+test("resolveConfig without tier overrides keeps kernel defaults (5/10)", () => {
+  const cfg = resolveConfig(EMPTY, 200_000);
+  assert.equal(cfg.tiers.tier2Trigger, 5);
+  assert.equal(cfg.tiers.tier3Trigger, 10);
+});
+
+test("mergeCompress: tier triggers cascade deepest-wins like other fields", () => {
+  const merged = mergeCompress({ tier2Trigger: 8 }, { tier2Trigger: 9 }, { tier2Trigger: 10 });
+  assert.equal(merged.tier2Trigger, 10);
+  assert.equal(merged.tier3Trigger, undefined);
+});
