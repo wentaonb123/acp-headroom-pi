@@ -125,15 +125,15 @@ export function wireToolGuardrails(pi: ExtensionAPI, runtime: AcpRuntime): void 
     const timeoutSecs =
       isBash && event.isError ? detectBashTimeout(event.content) : undefined;
 
+    // Apply unconditionally: capToolOutput falls back to
+    // DEFAULT_TOOL_OUTPUT_MAX_BYTES when the adapter key is unset (the
+    // documented default), and treats an explicit 0 as "disabled".
     let modified: ToolResultEvent["content"] | undefined;
-    const max = runtime.adapter.toolOutputMaxBytes;
-    if (max !== undefined && max > 0) {
-      const next = capToolOutput(event.content, max, fullPath);
-      if (next) {
-        modified = next;
-        debug.event("guardrail-output-cap", { max, hadPath: !!fullPath });
-        logWarn("guardrail", { event: "output-cap", max, hadPath: !!fullPath });
-      }
+    const next = capToolOutput(event.content, runtime.adapter.toolOutputMaxBytes, fullPath);
+    if (next) {
+      modified = next;
+      debug.event("guardrail-output-cap", { max: runtime.adapter.toolOutputMaxBytes ?? DEFAULT_TOOL_OUTPUT_MAX_BYTES, hadPath: !!fullPath });
+      logWarn("guardrail", { event: "output-cap", max: runtime.adapter.toolOutputMaxBytes ?? DEFAULT_TOOL_OUTPUT_MAX_BYTES, hadPath: !!fullPath });
     }
 
     if (timeoutSecs !== undefined) {
