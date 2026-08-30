@@ -224,7 +224,7 @@ async function handleCompressLocked(args: CompressArgs, runtime: AcpRuntime, ctx
         `Use search_context or decompress to retrieve details, or pick a range containing uncompressed messages (acp_status lists compressible ranges).`,
     );
   }
-  await runtime.save(applied.state, ctx);
+  const persisted = await runtime.save(applied.state, ctx);
   const { blocksCreated, tokensCompressed, errors, warnings } = applied.result;
 
   // Re-measure the post-compression sent view on the SAME scale as beforeTokens
@@ -275,6 +275,12 @@ async function handleCompressLocked(args: CompressArgs, runtime: AcpRuntime, ctx
   }
 
   const lines = [`▣ ACP | ${formatK(beforeTokens)} → ${formatK(afterTokens)} tokens (~${formatK(reclaimed)} reclaimed, ${blocksCreated} block${blocksCreated > 1 ? "s" : ""})`];
+  if (!persisted) {
+    // The disk is the only source of truth: without this warning the model
+    // believes the blocks are durable and only discovers the loss after a
+    // restart, when refs resurrect and every recorded boundary goes stale.
+    lines.push("⚠️ WARNING: compression state could NOT be saved to disk — these blocks will be LOST when pi restarts. Tell the user; check disk space and write permissions for the session directory.");
+  }
   if (warnings.length > 0) lines.push("⚠️ " + warnings.join("; "));
   if (errors.length > 0) lines.push("Errors: " + errors.join("; "));
   return lines.join("\n");

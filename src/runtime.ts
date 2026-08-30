@@ -94,7 +94,7 @@ export interface AcpRuntime {
    *  session_start and on every context event so config edits apply live. */
   reloadConfig(cwd: string): Promise<void>;
   stateFor(ctx: ExtensionContext, liveMessages?: AgentMessage[]): Promise<{ state: CompressionState; coreMessages: ReturnType<typeof entriesToCoreMessages>; entries: SessionEntry[] }>;
-  save(state: CompressionState, ctx: ExtensionContext): Promise<void>;
+  save(state: CompressionState, ctx: ExtensionContext): Promise<boolean>;
   acquireLock(sid: string): Promise<() => void>;
   /** Per-session overflow self-heal state (learned window + armed emergency).
    *  Keyed by session id so concurrent sessions cannot share an episode. */
@@ -441,9 +441,9 @@ export function createRuntime(adapter: AdapterConfig): AcpRuntime {
     return { state, coreMessages, entries };
   }
 
-  async function save(state: CompressionState, ctx: ExtensionContext) {
+  async function save(state: CompressionState, ctx: ExtensionContext): Promise<boolean> {
     const sm = ctx.sessionManager;
-    await store.save(state, sm.getSessionFile() ?? undefined, sm.getSessionId());
+    return store.save(state, sm.getSessionFile() ?? undefined, sm.getSessionId());
   }
 
   function noteActiveBlocks(sid: string, activeBlockIds: string[]): boolean {

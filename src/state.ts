@@ -84,9 +84,14 @@ export class SessionStateStore {
     return state;
   }
 
-  async save(state: CompressionState, sessionFile: string | undefined, sessionId: string): Promise<void> {
+  /** Persist state atomically (tmp file + rename). Returns false when the
+   *  write failed — callers surface this to the model, because the disk is
+   *  the only source of truth and an unsaved block is lost on restart. A
+   *  missing session file (in-memory session) counts as success: there is
+   *  nothing to lose. */
+  async save(state: CompressionState, sessionFile: string | undefined, sessionId: string): Promise<boolean> {
     const file = stateFileFor(sessionFile);
-    if (!file) return;
+    if (!file) return true;
     const key = cacheKey(sessionFile, sessionId);
     const liveRefOrigins = this.cache.get(key)?.liveRefOrigins ?? [];
     this.cache.set(key, { state, liveRefOrigins });
@@ -98,8 +103,10 @@ export class SessionStateStore {
     try {
       await fs.writeFile(tmp, JSON.stringify({ ...state, liveRefOrigins }), "utf8");
       await fs.rename(tmp, file);
+      return true;
     } catch (e) {
       logError("state", { event: "save-failed", file, error: e instanceof Error ? e.message : String(e) });
+      return false;
     }
   }
 
