@@ -25,7 +25,7 @@
 		"node": ">=20"
 	},
 	"scripts": {
-		"test": "node --import tsx --test tests/*.test.ts",
+		"test": "node --import tsx --test tests/*.test.ts tests/*.test.mjs",
 		"typecheck": "tsc --noEmit",
 		"build": "tsup && tsc --emitDeclarationOnly",
 		"prepare": "npm run build"
