@@ -1,6 +1,7 @@
 import { defaultConfig, type Config, type Prompts } from "acp-kernel";
 import type { ThrottleRetryConfig } from "./throttle-retry.js";
 import type { HeadroomSettings } from "./headroom/config.js";
+import { logWarn } from "./log.js";
 
 export type { HeadroomSettings } from "./headroom/config.js";
 
@@ -197,11 +198,12 @@ export function resolveConfig(adapter: AdapterConfig, liveContextLimit: number, 
     ...adapter.coreOverrides,
   });
   const c = resolveCompress(adapter.compress, provider, modelId);
-  if (c.maxContextLimit !== undefined) config.nudge.maxContextLimitPct = parsePercent(c.maxContextLimit);
-  if (c.emergencyThresholdPercent !== undefined) {
-    const pct = parsePercent(c.emergencyThresholdPercent);
-    config.nudge.emergencyThresholdPct = pct;
-    config.truncate.threshold = pct;
+  const maxPct = c.maxContextLimit !== undefined ? parsePercent(c.maxContextLimit, "compress.maxContextLimit") : undefined;
+  if (maxPct !== undefined) config.nudge.maxContextLimitPct = maxPct;
+  const emergencyPct = c.emergencyThresholdPercent !== undefined ? parsePercent(c.emergencyThresholdPercent, "compress.emergencyThresholdPercent") : undefined;
+  if (emergencyPct !== undefined) {
+    config.nudge.emergencyThresholdPct = emergencyPct;
+    config.truncate.threshold = emergencyPct;
   }
   if (c.nudgeGrowthTokens !== undefined) {
     config.nudge.growthFloor = c.nudgeGrowthTokens;
@@ -212,9 +214,16 @@ export function resolveConfig(adapter: AdapterConfig, liveContextLimit: number, 
   return config;
 }
 
-export function parsePercent(v: number | string): number {
-  if (typeof v === "number") return v;
-  const s = v.trim();
-  if (s.endsWith("%")) return Number(s.slice(0, -1)) / 100;
-  return Number(s);
+/** Parse a ratio (0.75) or percent string ("75%") into a 0-1 ratio. Returns
+ *  undefined for anything that is not a finite value in (0, 1] — a warn is
+ *  logged so a typo surfaces, and callers keep the kernel default instead of
+ *  poisoning nudge/threshold comparisons with NaN (NaN makes every comparison
+ *  false: nudges silently never fire). */
+export function parsePercent(v: number | string, field?: string): number | undefined {
+  const n = typeof v === "number" ? v : v.trim().endsWith("%") ? Number(v.trim().slice(0, -1)) / 100 : Number(v.trim());
+  if (!Number.isFinite(n) || n <= 0 || n > 1) {
+    logWarn("config", { event: "invalid-percent", field: field ?? null, value: v, hint: "expected a ratio (0.75) or percent string (\"75%\") in (0, 1]" });
+    return undefined;
+  }
+  return n;
 }
