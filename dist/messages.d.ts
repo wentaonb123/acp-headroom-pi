@@ -1,0 +1,10 @@
+import type { SessionEntry, SessionMessageEntry } from "@earendil-works/pi-coding-agent";
+import type { CoreMessage } from "acp-kernel";
+type AgentMessage = SessionMessageEntry["message"];
+export declare function entriesToCoreMessages(entries: SessionEntry[]): CoreMessage[];
+export declare function extractText(content: unknown): string;
+export declare function messageIdentity(message: unknown): string;
+export declare function messageRef(message: unknown): string | undefined;
+export declare function matchesStoredText(stored: string, visible: string): boolean;
+export declare function coreOutToAgentMessages(coreOut: CoreMessage[], originalById: Map<string, AgentMessage>): AgentMessage[];
+export {};

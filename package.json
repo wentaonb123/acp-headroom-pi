@@ -27,8 +27,7 @@
 	"scripts": {
 		"test": "node --import tsx --test tests/*.test.ts tests/*.test.mjs",
 		"typecheck": "tsc --noEmit",
-		"build": "tsup && tsc --emitDeclarationOnly",
-		"prepare": "npm run build"
+		"build": "tsup && tsc --emitDeclarationOnly"
 	},
 	"keywords": [
 		"pi-package",
@@ -69,5 +68,11 @@
 		"billion-context-kit": {
 			"acp-kernel": "$acp-kernel"
 		}
+	},
+	"allowScripts": {
+		"esbuild@0.28.2": true,
+		"esbuild@0.27.7": true,
+		"protobufjs@7.6.5": true,
+		"@google/genai@1.52.0": true
 	}
 }
