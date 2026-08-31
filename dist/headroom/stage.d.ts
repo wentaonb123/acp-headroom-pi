@@ -19,6 +19,11 @@ export declare class HeadroomStage {
     readonly getAdapter: () => AdapterConfig;
     stats: HeadroomStats;
     private cache;
+    /** Cache keys the proxy already proved uncompressible (no-op or below-gain).
+     *  Without this, a below-gain candidate would burn a proxy round-trip on
+     *  EVERY context event — the exact waste the rolling budget is meant to
+     *  avoid. Same lifecycle as `cache` (cleared at CACHE_MAX + session reset). */
+    private noGain;
     private proxyTried;
     private unavailableNotified;
     constructor(getAdapter: () => AdapterConfig);

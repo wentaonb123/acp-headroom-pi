@@ -32,6 +32,13 @@ export interface CompressSettings {
     /** Token growth threshold for soft compression nudges. Default: 50000.
      *  Maps to kernel nudge.growthFloor + nudge.growthCap. */
     nudgeGrowthTokens?: number;
+    /** Number of active tier-1 blocks that triggers tier-2 distillation nudge
+     *  (count gate, independent of token-pressure ordering). Default: 5.
+     *  Maps to kernel tiers.tier2Trigger. */
+    tier2Trigger?: number;
+    /** Number of active tier-2 blocks that triggers tier-3 condensation nudge
+     *  (count gate). Default: 10. Maps to kernel tiers.tier3Trigger. */
+    tier3Trigger?: number;
 }
 /** Per-provider compression overrides. Carries the same tuning fields as the
  *  global level, plus an optional per-model map keyed by model id. */
@@ -132,4 +139,9 @@ export declare function mergeCompress(global?: CompressSettings, provider?: Comp
  *  not URL — it never sees the upstream URL the way the proxy does. */
 export declare function resolveCompress(compress: CompressConfig | undefined, provider: string | undefined, modelId: string | undefined): CompressSettings;
 export declare function resolveConfig(adapter: AdapterConfig, liveContextLimit: number, provider?: string, modelId?: string): Config;
-export declare function parsePercent(v: number | string): number;
+/** Parse a ratio (0.75) or percent string ("75%") into a 0-1 ratio. Returns
+ *  undefined for anything that is not a finite value in (0, 1] — a warn is
+ *  logged so a typo surfaces, and callers keep the kernel default instead of
+ *  poisoning nudge/threshold comparisons with NaN (NaN makes every comparison
+ *  false: nudges silently never fire). */
+export declare function parsePercent(v: number | string, field?: string): number | undefined;

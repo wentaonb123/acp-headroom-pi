@@ -21,6 +21,10 @@ export interface HeadroomSettings {
     /** Try to spawn the proxy when it is not reachable at startup.
      *  Default: true. */
     autoStart?: boolean;
+    /** On session start, check (throttled to once per 24h) whether the
+     *  installed headroom engine has a newer release and surface a hint to
+     *  run /headroom-update. Never upgrades automatically. Default: true. */
+    checkUpdatesOnStart?: boolean;
 }
 export interface ResolvedHeadroomConfig {
     enabled: boolean;
@@ -30,6 +34,7 @@ export interface ResolvedHeadroomConfig {
     timeoutMs: number;
     protectedTools: string[];
     autoStart: boolean;
+    checkUpdatesOnStart: boolean;
 }
 /** ACP's own tools whose results are load-bearing metadata or already-lean
  *  summaries — never mechanically compressed. */

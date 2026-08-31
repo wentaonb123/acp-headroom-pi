@@ -153,7 +153,7 @@ function startProxy(baseUrl) {
 function killProxyTree(child) {
   try {
     if (process.platform === "win32" && child.pid) {
-      execFile("taskkill", ["/pid", String(child.pid), "/T", "/F"], () => {
+      execFile("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true }, () => {
       });
     } else {
       child.kill();
@@ -333,4 +333,4 @@ export {
   saveOriginals,
   retrieveOriginal
 };
-//# sourceMappingURL=chunk-HQ3FGHOZ.js.map
+//# sourceMappingURL=chunk-MRXTI3AT.js.map

@@ -76,7 +76,7 @@ export interface AcpRuntime {
         coreMessages: ReturnType<typeof entriesToCoreMessages>;
         entries: SessionEntry[];
     }>;
-    save(state: CompressionState, ctx: ExtensionContext): Promise<void>;
+    save(state: CompressionState, ctx: ExtensionContext): Promise<boolean>;
     acquireLock(sid: string): Promise<() => void>;
     /** Per-session overflow self-heal state (learned window + armed emergency).
      *  Keyed by session id so concurrent sessions cannot share an episode. */
