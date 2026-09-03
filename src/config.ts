@@ -34,8 +34,21 @@ export interface CompressSettings {
    *  nudge.emergencyThresholdPct + truncate.threshold. */
   emergencyThresholdPercent?: number | string;
   /** Token growth threshold for soft compression nudges. Default: 50000.
-   *  Maps to kernel nudge.growthFloor + nudge.growthCap. */
+   *  Maps to kernel nudge.growthFloor + nudge.growthCap.
+   *
+   *  Legaacy pin: setting it fixes BOTH floor and cap to the same value
+   *  (nudgeGrowthTokens = modelContextLimit × growthRatio clamped to
+   *  [growthFloor, growthCap] collapses to exactly this). Prefer the two
+   *  ratio/cap fields below for per-axis control. When this field is set it
+   *  takes precedence over nudgeGrowthRatio/nudgeGrowthCap. */
   nudgeGrowthTokens?: number;
+  /** Adaptive growth ratio: nudgeGrowthTokens = modelContextLimit × this
+   *  ratio, clamped to [growthFloor, growthCap]. Default: 0.05 (5%).
+   *  Maps to kernel nudge.growthRatio. Ignored when nudgeGrowthTokens is set. */
+  nudgeGrowthRatio?: number | string;
+  /** Upper clamp for the adaptive growth threshold. Default: 50000.
+   *  Maps to kernel nudge.growthCap. Ignored when nudgeGrowthTokens is set. */
+  nudgeGrowthCap?: number;
   /** Number of active tier-1 blocks that triggers tier-2 distillation nudge
    *  (count gate, independent of token-pressure ordering). Default: 5.
    *  Maps to kernel tiers.tier2Trigger. */
@@ -159,6 +172,8 @@ export function mergeCompress(
     maxContextLimit: model?.maxContextLimit ?? provider?.maxContextLimit ?? global?.maxContextLimit,
     emergencyThresholdPercent: model?.emergencyThresholdPercent ?? provider?.emergencyThresholdPercent ?? global?.emergencyThresholdPercent,
     nudgeGrowthTokens: model?.nudgeGrowthTokens ?? provider?.nudgeGrowthTokens ?? global?.nudgeGrowthTokens,
+    nudgeGrowthRatio: model?.nudgeGrowthRatio ?? provider?.nudgeGrowthRatio ?? global?.nudgeGrowthRatio,
+    nudgeGrowthCap: model?.nudgeGrowthCap ?? provider?.nudgeGrowthCap ?? global?.nudgeGrowthCap,
     tier2Trigger: model?.tier2Trigger ?? provider?.tier2Trigger ?? global?.tier2Trigger,
     tier3Trigger: model?.tier3Trigger ?? provider?.tier3Trigger ?? global?.tier3Trigger,
   };
@@ -206,8 +221,24 @@ export function resolveConfig(adapter: AdapterConfig, liveContextLimit: number, 
     config.truncate.threshold = emergencyPct;
   }
   if (c.nudgeGrowthTokens !== undefined) {
+    // Legacy pin: fixing BOTH floor and cap to the same value. Takes
+    // precedence over the per-axis ratio/cap fields below.
     config.nudge.growthFloor = c.nudgeGrowthTokens;
     config.nudge.growthCap = c.nudgeGrowthTokens;
+  } else {
+    // Per-axis control: nudgeGrowthTokens = modelContextLimit × ratio,
+    // clamped to [growthFloor, growthCap]. Only defined fields override;
+    // undefined axes keep the kernel default (floor 50000 / cap 50000 /
+    // ratio 0.05).
+    const ratio = c.nudgeGrowthRatio !== undefined ? parsePercent(c.nudgeGrowthRatio, "compress.nudgeGrowthRatio") : undefined;
+    if (ratio !== undefined) config.nudge.growthRatio = ratio;
+    if (c.nudgeGrowthCap !== undefined) {
+      if (!Number.isFinite(c.nudgeGrowthCap) || c.nudgeGrowthCap <= 0) {
+        logWarn("config", { event: "invalid-nudgeGrowthCap", value: c.nudgeGrowthCap, hint: "expected a positive number; keeping kernel default" });
+      } else {
+        config.nudge.growthCap = c.nudgeGrowthCap;
+      }
+    }
   }
   if (c.tier2Trigger !== undefined) config.tiers.tier2Trigger = c.tier2Trigger;
   if (c.tier3Trigger !== undefined) config.tiers.tier3Trigger = c.tier3Trigger;

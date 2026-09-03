@@ -82,6 +82,30 @@ test("resolveConfig leaves growthFloor/growthCap at kernel defaults when compres
   assert.equal(cfg.nudge.growthCap, 50000);
 });
 
+test("resolveConfig maps compress.nudgeGrowthRatio to nudge.growthRatio (percent string ok)", () => {
+  const cfg = resolveConfig({ compress: { nudgeGrowthRatio: "10%" } }, 1_000_000);
+  assert.equal(cfg.nudge.growthRatio, 0.1);
+});
+
+test("resolveConfig maps compress.nudgeGrowthCap to nudge.growthCap, keeping kernel floor", () => {
+  const cfg = resolveConfig({ compress: { nudgeGrowthRatio: 0.1, nudgeGrowthCap: 100000 } }, 1_000_000);
+  assert.equal(cfg.nudge.growthRatio, 0.1);
+  assert.equal(cfg.nudge.growthCap, 100000);
+  // floor untouched: kernel default remains (not pinned by nudgeGrowthTokens)
+  assert.equal(cfg.nudge.growthFloor, 50000);
+});
+
+test("resolveConfig legacy nudgeGrowthTokens pin wins over ratio/cap", () => {
+  const cfg = resolveConfig({ compress: { nudgeGrowthTokens: 30000, nudgeGrowthRatio: 0.1, nudgeGrowthCap: 100000 } }, 1_000_000);
+  assert.equal(cfg.nudge.growthFloor, 30000);
+  assert.equal(cfg.nudge.growthCap, 30000, "legacy pin sets cap too, ignoring nudgeGrowthCap");
+});
+
+test("resolveConfig invalid nudgeGrowthRatio warns and keeps kernel default", () => {
+  const cfg = resolveConfig({ compress: { nudgeGrowthRatio: 0 } }, 1_000_000);
+  assert.equal(cfg.nudge.growthRatio, 0.05, "invalid ratio must not poison (keep kernel default)");
+});
+
 test("resolveConfig handles all three compress fields together", () => {
   const cfg = resolveConfig({ compress: { maxContextLimit: "70%", emergencyThresholdPercent: 0.9, nudgeGrowthTokens: 40000 } }, 1_000_000);
   assert.equal(cfg.nudge.maxContextLimitPct, 0.7);
