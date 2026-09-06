@@ -1,105 +1,50 @@
-import { appendFileSync, mkdirSync, statSync, renameSync, existsSync } from "node:fs";
-import * as path from "node:path";
+import { appendFileSync, statSync, renameSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
+import * as path from "node:path";
 
+/** Structured one-line-per-event log. Kept separate from billion-context-pi's
+ *  log file so the two layers stay greppable independently
+ *  (`grep '[headroom]' ~/.pi/acp-headroom.log`). All writes are best-effort —
+ *  logging must never break the request path. */
+
+const LOG_FILE = process.env.ACP_HEADROOM_LOG ?? path.join(homedir(), ".pi", "acp-headroom.log");
 const MAX_BYTES = 10 * 1024 * 1024;
 
-const ENV_DEBUG =
-  process.env.ACP_DEBUG === "1" || process.env.ACP_DEBUG === "true";
+type Level = "info" | "warn" | "error";
 
-function resolveLogFile(): string {
-  return process.env.ACP_LOG_FILE ?? path.join(homedir(), CONFIG_DIR_NAME, "acp.log");
+let debugEnabled = process.env.ACP_DEBUG === "1" || process.env.ACP_DEBUG === "true";
+
+export function setDebugEnabled(v: boolean): void {
+  debugEnabled = v;
 }
 
-let runtimeDebug: boolean | null = null;
-
-export function setDebugEnabled(enabled: boolean): void {
-  runtimeDebug = enabled;
-}
-
-function debugOn(): boolean {
-  return runtimeDebug ?? ENV_DEBUG;
-}
-
-function fmt(v: unknown): string {
-  if (typeof v === "string") return v;
-  if (v instanceof Error) return v.stack || String(v);
+function rotateIfNeeded(): void {
   try {
-    return JSON.stringify(v);
+    if (statSync(LOG_FILE).size > MAX_BYTES) renameSync(LOG_FILE, `${LOG_FILE}.1`);
   } catch {
-    return String(v);
+    // missing file: nothing to rotate
   }
 }
 
-function ts(): string {
-  return new Date().toISOString();
-}
-
-function writeLine(level: string, scope: string, fields: Record<string, unknown>): void {
-  const file = resolveLogFile();
+function write(level: Level, event: Record<string, unknown>): void {
   try {
-    if (existsSync(file) && statSync(file).size >= MAX_BYTES) {
-      renameSync(file, file + ".old");
-    }
+    mkdirSync(path.dirname(LOG_FILE), { recursive: true });
+    rotateIfNeeded();
+    appendFileSync(
+      LOG_FILE,
+      `${JSON.stringify({ ts: new Date().toISOString(), level, ...event })}\n`,
+      "utf8",
+    );
   } catch {
-  }
-  const body = Object.keys(fields)
-    .map((k) => `${k}=${fmt(fields[k])}`)
-    .join(" ");
-  const line = `${ts()} [${level}] [${scope}] ${body}\n`;
-  try {
-    mkdirSync(path.dirname(file), { recursive: true });
-    appendFileSync(file, line);
-  } catch {
+    // never throw from logging
   }
 }
 
-export type LogLevel = "error" | "warn" | "info" | "debug";
-
-export function closeLogStream(): void {
-}
-
-export function logError(scope: string, fields: Record<string, unknown>): void {
-  writeLine("error", scope, fields);
-}
-
-export function logWarn(scope: string, fields: Record<string, unknown>): void {
-  writeLine("warn", scope, fields);
-}
-
-export function logInfo(scope: string, fields: Record<string, unknown>): void {
-  writeLine("info", scope, fields);
-}
-
-export function logThrow(scope: string, err: unknown, extra: Record<string, unknown> = {}): void {
-  const fields: Record<string, unknown> = { ...extra };
-  if (err instanceof Error) {
-    fields.error = err.message;
-    fields.stack = err.stack ?? "";
-  } else {
-    fields.error = String(err);
-  }
-  writeLine("error", scope, fields);
-}
-
-export const debug = {
-  get enabled(): boolean {
-    return debugOn();
-  },
-  get logFile(): string {
-    return resolveLogFile();
-  },
-  event(scope: string, fields: Record<string, unknown>): void {
-    if (debugOn()) writeLine("debug", scope, fields);
-  },
-};
-
-export const logger = {
-  error: logError,
-  warn: logWarn,
-  info: logInfo,
-  debug(scope: string, fields: Record<string, unknown>): void {
-    debug.event(scope, fields);
+export const log = {
+  info: (event: Record<string, unknown>) => write("info", event),
+  warn: (event: Record<string, unknown>) => write("warn", event),
+  error: (event: Record<string, unknown>) => write("error", event),
+  debug: (event: Record<string, unknown>) => {
+    if (debugEnabled) write("info", event);
   },
 };

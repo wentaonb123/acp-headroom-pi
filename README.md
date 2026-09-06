@@ -1,109 +1,89 @@
 # acp-headroom-pi
 
-[Pi 编码代理](https://pi.dev)的双层上下文压缩插件：**ACP 模型驱动摘要压缩**（源自 [billion-context-pi](https://github.com/ranxianglei/billion-context-pi)，MIT）+ **Headroom 工具输出机械压缩**（对接 [headroom](https://github.com/headroomlabs-ai/headroom) 本地代理，Apache-2.0），融合为单一插件。
+A pure fusion extension for the [Pi coding agent](https://github.com/earendil-works): it combines two upstream context-management projects and adds nothing else.
+
+- **[billion-context-pi](https://github.com/ranxianglei/billion-context-pi)** — model-driven context management: ref tags, token accounting, nudges, model-written summaries, multi-tier distillation (T1→T2→T3), emergency truncation. Used **unmodified** via its published `createAcpExtension` factory.
+- **[headroom](https://github.com/headroomlabs-ai/headroom)** — mechanical, deterministic payload compression through its local proxy, driven by the official `headroom-ai` TypeScript SDK. Tool outputs that would flood the context are compressed before hitting the wire; the model can pull originals back with `headroom_retrieve({ hash })`.
+
+## Architecture
 
 ```
-工具输出 ──▶ ① Headroom 阶段（机械压缩，模型看到前已瘦身）
-                JSON 数组省 70-90% · 日志 80-95% · 搜索结果 60-80%
-                  │ 原文存 CCR（代理内存 + 本地磁盘备份）
-                  ▼
-             ② ACP 管线（ref 标记 → token 计数 → nudge → LLM 范围摘要压缩
-                → 多层蒸馏 T1→T2→T3 → 紧急截断）
-                  ▼
-               LLM
+session_start ──► load ~/.pi/acp.json "headroom" key
+                   probe/spawn local headroom proxy (background)
+
+before_agent_start ──► (ccr mode) append HEADROOM prompt guidance
+        ▲ chained: billion-context-pi's handler runs first
+
+before_provider_request ──► headroom stage:
+        ▲ chained: ACP has finished all its work    project payload (fail open
+                                                    on structured content)
+                                                    POST /v1/compress
+                                                    { mode, frozen_message_count }
+                                                    ──► rewritten payload
 ```
 
-两层互补：Headroom 在内容进入上下文*之前*消灭噪音（确定性、零 LLM 调用）；ACP 处理长程历史（模型自己决定何时、把什么压成摘要）。单一插件接管全部上下文管理——不会出现两个上下文插件互相改写消息的冲突。
+The ordering **is** the design: headroom hooks `before_provider_request`, the last event before bytes hit the wire. By then billion-context-pi has completed its prune/ref/summary pass, so headroom only ever optimizes final payloads. No upstream patching, no duplicated state, and each side upgrades independently — bumping `billion-context-pi` or `headroom-ai` in `package.json` is the whole upgrade story.
 
-## 安装
+Both upstream packages are declared **external** in the bundle: the shipped extension loads them from `node_modules` at runtime, where a single idempotent postinstall patch (`scripts/patch-upstream.mjs`) applies the one fix upstream has not absorbed yet (the negative-growth nudge deadlock; see `NUDGE-COUNT-GATE-FIX.md`).
 
-```bash
-# 1. Headroom 压缩引擎（Python 本地代理）
+## Install
+
+```sh
+npm install acp-headroom-pi
+```
+
+The headroom half needs the local proxy:
+
+```sh
 uv tool install --python 3.13 "headroom-ai[proxy]"
-
-# 2. 本插件
-pi install npm:acp-headroom-pi
+headroom proxy --port 8787        # or let the extension auto-start it
 ```
 
-插件启动时自动探测 `http://127.0.0.1:8787` 的代理，不在则后台静默拉起（`headroom` 在 PATH 用之，否则 `uv tool run`，无终端窗口）。**退出 pi 时，插件只回收自己拉起的代理**；你手动启动的实例不受影响。代理不可用时**降级直通**：工具输出原样进入上下文，仅提示一次。
+## Configuration
 
-## 工作方式
+One config file: `~/.pi/acp.json` (or `<project>/.pi/acp.json`, which overrides global keys). This plugin claims **only** the `"headroom"` key; every other key (including billion-context-pi's) belongs to the upstream extension and is read by it directly.
 
-1. **Headroom 阶段**：每次 LLM 调用前（pi 的 `context` 事件），超过阈值的历史 `toolResult` 通过 `POST /v1/compress`（`mode=ccr`）逐条压缩。替换文本自带 CCR 标记（12 或 24 位 hex hash），原文留在会话日志不动。
-2. **本地 CCR 兜底**：压缩成功时原文同步落盘 `~/.pi/acp-headroom/ccr/<hash>.txt`，不受代理 ~30 分钟 TTL 限制。
-3. **下游一致**：token 计数、nudge 阈值、ACP 摘要压缩看到的都是瘦身后视图；压缩文本经 pi 的 kernel-body 变异通道自动流达最终消息数组。
-4. **找回原文**：模型对标记里的 hash 调用 `headroom_retrieve({ hash })`——先查本地磁盘，再查代理 `/v1/retrieve/{hash}`。
-
-## 模型可用工具
-
-| 工具 | 来源 | 作用 |
-|---|---|---|
-| `compress` / `decompress` / `search_context` / `acp_status` | ACP | 会话范围摘要压缩 / 解压 / 搜索 / 状态 |
-| `acp_delegate` / `_wait` / `_cancel` | ACP | 干净上下文子代理委派 |
-| `headroom_retrieve` | Headroom | 按 hash 取回压缩前的原始输出 |
-
-## 配置
-
-`~/.pi/acp.json`（全局）或 `<project>/.pi/acp.json`（项目覆盖），新增 `headroom` 键：
-
-```json
+```jsonc
 {
+  // billion-context-pi's own keys live here, untouched, e.g.:
+  // "delegate": { "enabled": false }
   "headroom": {
-    "enabled": true,
+    "enabled": true,                 // false bypasses the mechanical stage entirely
     "proxyUrl": "http://127.0.0.1:8787",
-    "minChars": 4000,
-    "maxPerTurn": 8,
+    "mode": "ccr",                   // "ccr" | "lossy_inline" | "lossless_then_lossy"
+    "minMessages": 4,                // skip tiny conversations
+    "minPayloadChars": 4000,
+    "frozenMessageCount": 2,         // pin prefix for provider prompt-cache hits
     "timeoutMs": 3000,
-    "protectedTools": ["my_custom_tool"],
-    "autoStart": true
+    "autoStart": true                // spawn the proxy if it is not reachable
   }
 }
 ```
 
-| 键 | 默认 | 说明 |
-|---|---|---|
-| `enabled` | `true` | `false`（或 `"headroom": false`）关闭该阶段 |
-| `proxyUrl` | env `HEADROOM_PROXY_URL` > `http://127.0.0.1:8787` | 代理地址 |
-| `minChars` | `4000` | 触发压缩的最小文本长度（约 1K token） |
-| `maxPerTurn` | `8` | 每次 context 事件的代理调用上限（最大者优先，限制请求路径延迟） |
-| `timeoutMs` | `3000` | 单次请求超时；超时/失败放行原文 |
-| `protectedTools` | 内置 ACP 工具集 | 追加永不压缩的工具名 |
-| `autoStart` | `true` | 探测不到代理时自动拉起 |
+To disable billion-context-pi's delegate-agent feature, set the corresponding upstream key (see its README) — no fork needed. That is the point of this project: behavior changes are configuration, not code.
 
-内置保护：ACP 全部自有工具 + 当前用户轮次之后的最新结果 + 已带 CCR 标记的文本（不重复压缩）。环境变量另支持 `HEADROOM_CCR_DIR`（本地备份目录，默认 `~/.pi/acp-headroom/ccr`）与 ACP 原有 `ACP_DEBUG` / `ACP_LOG_FILE` 等。
+`HEADROOM_PROXY_URL` (env) overrides `proxyUrl`. `ACP_HEADROOM_LOG` moves the log file (default `~/.pi/acp-headroom.log`, rotated at 10 MB); `ACP_DEBUG=1` enables debug events.
 
-日志沿用结构化格式写入 `~/.pi/acp-headroom.log`（10MB 轮转）：`grep '\[headroom\]' ~/.pi/acp-headroom.log` 可看每次压缩与代理故障。`/acp` 面板底部新增 Headroom 行（代理地址、本会话压缩条数、累计节省 token）。
+## Failure model
 
-## 兼容性
+The headroom stage is strictly optional and fails open everywhere:
 
-保持「只装一个上下文管理插件」原则：本插件已取消 pi 内置 auto-compaction，且不要再与其他改写 context 的扩展同装。卸载 billion-context-pi 与 headroom-opencode 后安装本插件。
+- Proxy unreachable → payload is sent as-is (hysteretic health cache avoids re-probing every call).
+- Payload contains structured content blocks (tool calls, images, thinking) → skipped whole; only plain-string payloads that round-trip exactly are compressed.
+- Proxy answers with no gain (`tokens_after >= tokens_before`) → original payload wins.
 
-## 更新
+A missing proxy never blocks or breaks an LLM request; the ACP layer is unaffected by any of it.
 
-两个组件独立更新，建议顺序：headroom 引擎在前，插件在后。
+## Development
 
-1. **headroom 引擎**（Python，`~/.local/bin/headroom`）：
-   - 在 pi 会话内运行 `/headroom-update`：自动停止插件拉起的代理 → `uv tool upgrade headroom-ai`（尊重你的 uv 镜像/index 配置）→ 重启代理并验证 `/health`，结束时提示插件更新命令。
-   - 本机存在手动启动的代理时命令会中止并提示先关闭（升级需替换可执行文件，Windows 下 shim 文件被占用会报 `os error 32`）。
-   - 也可跳过插件自己执行：`uv tool upgrade headroom-ai`，然后重启代理（`headroom proxy --port 8787`）。
-2. **本插件**（npm）：退出 pi 后执行 `pi update --extensions`（或 `pi update npm:acp-headroom-pi`），重新进入 pi 生效。
-
-每次启动时会自动检查一次 headroom 是否有新版本（24 小时内仅一次，仅提示不自动升级），发现新版会弹提示并写日志；可用 `acp.json` 的 `headroom.checkUpdatesOnStart: false` 关闭。查看状态：`/headroom-status`（引擎版本 + 代理健康 + 本会话压缩统计）。
-
-## 开发
-
-```bash
-npm install
-npm test          # node --test（376 用例）
-npm run typecheck # tsc --noEmit
-npm run build     # tsup → dist/
+```sh
+npm install        # also runs the idempotent upstream patch
+npm test           # unit tests (node:test via tsx)
+npm run typecheck  # tsc --noEmit
+npm run build      # tsup bundle + declarations
+npm run upstream   # bump both upstream deps to latest
 ```
 
-注：3 个符号链接相关的既有测试在 Windows 无开发者模式环境下因 EPERM 失败（上游遗留，与本插件无关）。
-
-## 致谢与许可
-
-- [billion-context-pi](https://github.com/ranxianglei/billion-context-pi)（MIT）— ACP 管线、pi 扩展骨架、acp-kernel 集成
-- [headroom](https://github.com/headroomlabs-ai/headroom)（Apache-2.0）— 压缩管线与 CCR 协议（经本地代理 HTTP 对接，未复制其代码）
+## License
 
 MIT

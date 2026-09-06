@@ -1,244 +1,65 @@
-import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resolveConfig, resolveCompress, mergeCompress, resolveDelegate, type AdapterConfig } from "../src/config.js";
+import { describe, it } from "node:test";
+import { HEADROOM_DEFAULTS, resolveHeadroom } from "../src/config.js";
 
-const EMPTY: AdapterConfig = {};
+describe("resolveHeadroom", () => {
+  it("returns defaults for empty config", () => {
+    const r = resolveHeadroom(undefined);
+    assert.deepEqual(
+      { ...r, proxyUrl: r.proxyUrl },
+      { ...HEADROOM_DEFAULTS, proxyUrl: HEADROOM_DEFAULTS.proxyUrl },
+    );
+  });
 
-test("resolveConfig uses the live model context window as-is (no cap on large windows)", () => {
-  const cfg = resolveConfig(EMPTY, 1_000_000);
-  assert.equal(cfg.modelContextLimit, 1_000_000, "1M window must NOT be capped to 150K");
-});
+  it("false disables the stage", () => {
+    assert.equal(resolveHeadroom(false).enabled, false);
+  });
 
-test("resolveConfig passes small windows through unchanged too", () => {
-  assert.equal(resolveConfig(EMPTY, 32_000).modelContextLimit, 32_000);
-  assert.equal(resolveConfig(EMPTY, 200_000).modelContextLimit, 200_000);
-});
+  it("env HEADROOM_PROXY_URL wins over config", () => {
+    process.env.HEADROOM_PROXY_URL = "http://127.0.0.1:9999/";
+    try {
+      const r = resolveHeadroom({ proxyUrl: "http://127.0.0.1:8787" });
+      assert.equal(r.proxyUrl, "http://127.0.0.1:9999"); // trailing slash stripped
+    } finally {
+      delete process.env.HEADROOM_PROXY_URL;
+    }
+  });
 
-test("resolveConfig falls back to 150K only when the live window is unavailable", () => {
-  assert.equal(resolveConfig(EMPTY, 0).modelContextLimit, 150_000);
-});
+  it("rejects invalid values and keeps defaults", () => {
+    const r = resolveHeadroom({
+      mode: "bogus",
+      minMessages: -3,
+      minPayloadChars: "x",
+      timeoutMs: 0,
+      frozenMessageCount: -1,
+      enabled: 0, // not === false, so stays enabled
+    });
+    assert.equal(r.mode, HEADROOM_DEFAULTS.mode);
+    assert.equal(r.minMessages, HEADROOM_DEFAULTS.minMessages);
+    assert.equal(r.minPayloadChars, HEADROOM_DEFAULTS.minPayloadChars);
+    assert.equal(r.timeoutMs, HEADROOM_DEFAULTS.timeoutMs);
+    assert.equal(r.frozenMessageCount, undefined);
+    assert.equal(r.enabled, true);
+  });
 
-test("resolveConfig prefers adapter.modelContextLimit over the live window", () => {
-  const cfg = resolveConfig({ modelContextLimit: 500_000 }, 1_000_000);
-  assert.equal(cfg.modelContextLimit, 500_000);
-});
-
-test("resolveConfig prefers ACP_MODEL_CONTEXT_LIMIT env var over everything", () => {
-  const prev = process.env.ACP_MODEL_CONTEXT_LIMIT;
-  process.env.ACP_MODEL_CONTEXT_LIMIT = "999999";
-  try {
-    const cfg = resolveConfig({ modelContextLimit: 500_000 }, 1_000_000);
-    assert.equal(cfg.modelContextLimit, 999_999);
-  } finally {
-    if (prev === undefined) delete process.env.ACP_MODEL_CONTEXT_LIMIT;
-    else process.env.ACP_MODEL_CONTEXT_LIMIT = prev;
-  }
-});
-
-test("resolveConfig ignores a non-positive ACP_MODEL_CONTEXT_LIMIT and falls through", () => {
-  const prev = process.env.ACP_MODEL_CONTEXT_LIMIT;
-  process.env.ACP_MODEL_CONTEXT_LIMIT = "0";
-  try {
-    const cfg = resolveConfig(EMPTY, 1_000_000);
-    assert.equal(cfg.modelContextLimit, 1_000_000, "env=0 must fall through to live window, not 0");
-  } finally {
-    if (prev === undefined) delete process.env.ACP_MODEL_CONTEXT_LIMIT;
-    else process.env.ACP_MODEL_CONTEXT_LIMIT = prev;
-  }
-});
-
-test("resolveConfig defaults to kernel 0.0.20 thresholds when no compress overrides set", () => {
-  const cfg = resolveConfig(EMPTY, 1_000_000);
-  assert.equal(cfg.nudge.maxContextLimitPct, 0.75);
-  assert.equal(cfg.nudge.emergencyThresholdPct, 0.95);
-  assert.equal(cfg.truncate.threshold, 0.95);
-});
-
-test("resolveConfig maps compress.maxContextLimit (number) to nudge.maxContextLimitPct", () => {
-  const cfg = resolveConfig({ compress: { maxContextLimit: 0.8 } }, 1_000_000);
-  assert.equal(cfg.nudge.maxContextLimitPct, 0.8);
-});
-
-test("resolveConfig maps compress.maxContextLimit (percent string) to nudge.maxContextLimitPct", () => {
-  const cfg = resolveConfig({ compress: { maxContextLimit: "80%" } }, 1_000_000);
-  assert.equal(cfg.nudge.maxContextLimitPct, 0.8);
-});
-
-test("resolveConfig maps compress.emergencyThresholdPercent to both nudge.emergencyThresholdPct and truncate.threshold", () => {
-  const cfg = resolveConfig({ compress: { emergencyThresholdPercent: "90%" } }, 1_000_000);
-  assert.equal(cfg.nudge.emergencyThresholdPct, 0.9);
-  assert.equal(cfg.truncate.threshold, 0.9);
-});
-
-test("resolveConfig maps compress.nudgeGrowthTokens to both growthFloor and growthCap", () => {
-  const cfg = resolveConfig({ compress: { nudgeGrowthTokens: 30000 } }, 1_000_000);
-  assert.equal(cfg.nudge.growthFloor, 30000);
-  assert.equal(cfg.nudge.growthCap, 30000);
-});
-
-test("resolveConfig leaves growthFloor/growthCap at kernel defaults when compress.nudgeGrowthTokens omitted", () => {
-  const cfg = resolveConfig(EMPTY, 1_000_000);
-  assert.equal(cfg.nudge.growthFloor, 50000);
-  assert.equal(cfg.nudge.growthCap, 50000);
-});
-
-test("resolveConfig maps compress.nudgeGrowthRatio to nudge.growthRatio (percent string ok)", () => {
-  const cfg = resolveConfig({ compress: { nudgeGrowthRatio: "10%" } }, 1_000_000);
-  assert.equal(cfg.nudge.growthRatio, 0.1);
-});
-
-test("resolveConfig maps compress.nudgeGrowthCap to nudge.growthCap, keeping kernel floor", () => {
-  const cfg = resolveConfig({ compress: { nudgeGrowthRatio: 0.1, nudgeGrowthCap: 100000 } }, 1_000_000);
-  assert.equal(cfg.nudge.growthRatio, 0.1);
-  assert.equal(cfg.nudge.growthCap, 100000);
-  // floor untouched: kernel default remains (not pinned by nudgeGrowthTokens)
-  assert.equal(cfg.nudge.growthFloor, 50000);
-});
-
-test("resolveConfig legacy nudgeGrowthTokens pin wins over ratio/cap", () => {
-  const cfg = resolveConfig({ compress: { nudgeGrowthTokens: 30000, nudgeGrowthRatio: 0.1, nudgeGrowthCap: 100000 } }, 1_000_000);
-  assert.equal(cfg.nudge.growthFloor, 30000);
-  assert.equal(cfg.nudge.growthCap, 30000, "legacy pin sets cap too, ignoring nudgeGrowthCap");
-});
-
-test("resolveConfig invalid nudgeGrowthRatio warns and keeps kernel default", () => {
-  const cfg = resolveConfig({ compress: { nudgeGrowthRatio: 0 } }, 1_000_000);
-  assert.equal(cfg.nudge.growthRatio, 0.05, "invalid ratio must not poison (keep kernel default)");
-});
-
-test("resolveConfig handles all three compress fields together", () => {
-  const cfg = resolveConfig({ compress: { maxContextLimit: "70%", emergencyThresholdPercent: 0.9, nudgeGrowthTokens: 40000 } }, 1_000_000);
-  assert.equal(cfg.nudge.maxContextLimitPct, 0.7);
-  assert.equal(cfg.nudge.emergencyThresholdPct, 0.9);
-  assert.equal(cfg.truncate.threshold, 0.9);
-  assert.equal(cfg.nudge.growthFloor, 40000);
-  assert.equal(cfg.nudge.growthCap, 40000);
-});
-
-test("resolveDelegate: undefined delegate defaults to enabled + separate", () => {
-  const r = resolveDelegate({});
-  assert.equal(r.enabled, true);
-  assert.equal(r.displayUsage, "separate");
-});
-
-test("resolveDelegate: boolean true shorthand", () => {
-  const r = resolveDelegate({ delegate: true });
-  assert.equal(r.enabled, true);
-  assert.equal(r.displayUsage, "separate");
-});
-
-test("resolveDelegate: boolean false shorthand", () => {
-  const r = resolveDelegate({ delegate: false });
-  assert.equal(r.enabled, false);
-  assert.equal(r.displayUsage, "separate");
-});
-
-test("resolveDelegate: object with enabled + displayUsage", () => {
-  const r = resolveDelegate({ delegate: { enabled: false, displayUsage: "merged" } });
-  assert.equal(r.enabled, false);
-  assert.equal(r.displayUsage, "merged");
-});
-
-test("resolveDelegate: object with only enabled (displayUsage defaults)", () => {
-  const r = resolveDelegate({ delegate: { enabled: true } });
-  assert.equal(r.enabled, true);
-  assert.equal(r.displayUsage, "separate");
-});
-
-test("resolveDelegate: legacy flat displayUsage still works with boolean delegate", () => {
-  const r = resolveDelegate({ delegate: true, displayUsage: "merged" });
-  assert.equal(r.enabled, true);
-  assert.equal(r.displayUsage, "merged");
-});
-
-test("resolveDelegate: legacy flat displayUsage still works with undefined delegate", () => {
-  const r = resolveDelegate({ displayUsage: "merged" });
-  assert.equal(r.enabled, true);
-  assert.equal(r.displayUsage, "merged");
-});
-
-test("resolveDelegate: object displayUsage takes priority over legacy flat", () => {
-  const r = resolveDelegate({ delegate: { displayUsage: "separate" }, displayUsage: "merged" });
-  assert.equal(r.displayUsage, "separate");
-});
-
-test("resolveCompress returns {} when no compress configured", () => {
-  assert.deepEqual(resolveCompress(undefined, "anthropic", "claude"), {});
-});
-
-test("resolveCompress falls back to global when provider/model unknown", () => {
-  const c = resolveCompress({ maxContextLimit: "75%" }, "unknown", "unknown");
-  assert.equal(c.maxContextLimit, "75%");
-});
-
-test("resolveCompress provider override wins over global", () => {
-  const compress = { maxContextLimit: "75%", providers: { anthropic: { maxContextLimit: "80%" } } };
-  assert.equal(resolveCompress(compress, "anthropic", undefined).maxContextLimit, "80%");
-  assert.equal(resolveCompress(compress, "openai", undefined).maxContextLimit, "75%");
-});
-
-test("resolveCompress model override wins over provider and global", () => {
-  const compress = {
-    maxContextLimit: "75%",
-    providers: { anthropic: { maxContextLimit: "80%", models: { "claude-sonnet-4": { maxContextLimit: "70%" } } } },
-  };
-  const c = resolveCompress(compress, "anthropic", "claude-sonnet-4");
-  assert.equal(c.maxContextLimit, "70%");
-});
-
-test("resolveCompress merges per-field (global/provider/model each set a different field)", () => {
-  const compress = {
-    maxContextLimit: "75%",
-    emergencyThresholdPercent: "95%",
-    providers: { anthropic: { emergencyThresholdPercent: "90%", models: { "claude-sonnet-4": { nudgeGrowthTokens: 30000 } } } },
-  };
-  const c = resolveCompress(compress, "anthropic", "claude-sonnet-4");
-  assert.equal(c.maxContextLimit, "75%", "global field inherited");
-  assert.equal(c.emergencyThresholdPercent, "90%", "provider field inherited");
-  assert.equal(c.nudgeGrowthTokens, 30000, "model field applied");
-});
-
-test("mergeCompress: undefined deeper field does not clear shallower value", () => {
-  const merged = mergeCompress({ maxContextLimit: "75%", nudgeGrowthTokens: 50000 }, { emergencyThresholdPercent: "90%" }, {});
-  assert.equal(merged.maxContextLimit, "75%");
-  assert.equal(merged.emergencyThresholdPercent, "90%");
-  assert.equal(merged.nudgeGrowthTokens, 50000);
-});
-
-test("resolveConfig applies provider/model cascade to kernel config", () => {
-  const adapter: AdapterConfig = {
-    compress: {
-      maxContextLimit: "75%",
-      providers: { anthropic: { models: { "claude-sonnet-4": { maxContextLimit: "70%", nudgeGrowthTokens: 30000 } } } },
-    },
-  };
-  const cfg = resolveConfig(adapter, 1_000_000, "anthropic", "claude-sonnet-4");
-  assert.equal(cfg.nudge.maxContextLimitPct, 0.7, "model-level maxContextLimit wins");
-  assert.equal(cfg.nudge.growthFloor, 30000);
-  assert.equal(cfg.nudge.growthCap, 30000);
-  assert.equal(cfg.nudge.emergencyThresholdPct, 0.95, "unset field inherits kernel default");
-});
-
-test("resolveConfig without provider/modelId behaves as before (global only)", () => {
-  const cfg = resolveConfig({ compress: { maxContextLimit: "80%" } }, 1_000_000);
-  assert.equal(cfg.nudge.maxContextLimitPct, 0.8);
-});
-
-test("resolveConfig maps tier2Trigger/tier3Trigger into kernel tiers", () => {
-  const cfg = resolveConfig({ compress: { tier2Trigger: 10, tier3Trigger: 25 } }, 200_000, "anthropic", "claude-sonnet-4");
-  assert.equal(cfg.tiers.tier2Trigger, 10);
-  assert.equal(cfg.tiers.tier3Trigger, 25);
-  assert.equal(cfg.tiers.enabled, true, "other tier fields keep kernel defaults");
-});
-
-test("resolveConfig without tier overrides keeps kernel defaults (5/10)", () => {
-  const cfg = resolveConfig(EMPTY, 200_000);
-  assert.equal(cfg.tiers.tier2Trigger, 5);
-  assert.equal(cfg.tiers.tier3Trigger, 10);
-});
-
-test("mergeCompress: tier triggers cascade deepest-wins like other fields", () => {
-  const merged = mergeCompress({ tier2Trigger: 8 }, { tier2Trigger: 9 }, { tier2Trigger: 10 });
-  assert.equal(merged.tier2Trigger, 10);
-  assert.equal(merged.tier3Trigger, undefined);
+  it("accepts valid overrides", () => {
+    const r = resolveHeadroom({
+      enabled: false,
+      proxyUrl: "http://localhost:9000",
+      mode: "lossy_inline",
+      minMessages: 10,
+      minPayloadChars: 20000,
+      frozenMessageCount: 2,
+      timeoutMs: 800,
+      autoStart: false,
+    });
+    assert.equal(r.enabled, false);
+    assert.equal(r.proxyUrl, "http://localhost:9000");
+    assert.equal(r.mode, "lossy_inline");
+    assert.equal(r.minMessages, 10);
+    assert.equal(r.minPayloadChars, 20000);
+    assert.equal(r.frozenMessageCount, 2);
+    assert.equal(r.timeoutMs, 800);
+    assert.equal(r.autoStart, false);
+  });
 });

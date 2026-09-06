@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.2.0
+
+### Changed — full rewrite as a pure fusion extension
+
+This release removes all vendored upstream source code. The plugin is now a
+thin integration layer around two published packages:
+
+- `billion-context-pi` (model-driven context management) is used unmodified
+  via its exported `createAcpExtension` factory.
+- `headroom` (mechanical payload compression) is driven through the official
+  `headroom-ai` TypeScript SDK against the local proxy's `/v1/compress`.
+
+Integration points (no upstream forks, no vendored copies):
+
+- `before_agent_start` / `before_provider_request` handlers are registered
+  after the ACP layer's and rely on pi's chained event semantics, so headroom
+  compresses the exact bytes about to hit the wire — after ACP has finished
+  its prune/ref/summary work.
+- `session_start` loads only the `"headroom"` key of `~/.pi/acp.json`; every
+  other key (e.g. disabling delegate-agent) is billion-context-pi's own
+  configuration surface and is read by upstream directly.
+- `headroom_retrieve({ hash })` tool (ccr mode) pulls compressed originals
+  back via the proxy's `/v1/retrieve` endpoint.
+
+Both upstream packages are external in the bundle and load from node_modules
+at runtime; `scripts/patch-upstream.mjs` (postinstall) applies a single
+idempotent patch — the negative-growth nudge deadlock clamp — which upstream
+has not absorbed yet (the old count-gate patch is no longer needed; bcp ships
+it natively).
+
+Removed: all vendored src/headroom/* modules, the old test suite covering
+them, and T2-DISTILL-FIX.md (fix absorbed upstream).
+
+### Added
+
+- Hysteretic proxy health checking (30s positive cache, retry-once, 15s
+  negative cache), background auto-start of the local headroom proxy
+  (`headroom` on PATH, then `uv tool run`), and tree-safe reclamation of only
+  the processes this plugin spawned.
+- Fail-open payload adapter: only plain-string (or all-text-block) payloads
+  that round-trip exactly are compressed; structured content skips whole.
+- New unit test suite (config resolution, payload projection/round-trip,
+  fail-open stage behavior, retrieve tool hash validation).
+
 ## 0.1.3
 
 ### Fixed

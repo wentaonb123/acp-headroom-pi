@@ -4,3 +4,4 @@ node_modules/
 *.acp.json
 .pi-subagents/
 tmp-debug.ts
+.workbuddy/
