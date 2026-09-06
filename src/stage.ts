@@ -30,6 +30,9 @@ interface CompressResponse {
 
 export class HeadroomStage {
   stats: HeadroomStats = { applied: 0, savedTokens: 0, skipped: 0 };
+  /** Last known proxy reachability, for the status line: undefined = not yet
+   *  probed, true = last request-path check passed, false = down. */
+  lastProxyUp: boolean | undefined = undefined;
   /** Consecutive rounds with an unreachable proxy — the UI notice fires only
    *  on a confirmed outage, not a single stalled probe. */
   private downRounds = 0;
@@ -40,6 +43,7 @@ export class HeadroomStage {
 
   resetSession(): void {
     this.stats = { applied: 0, savedTokens: 0, skipped: 0 };
+    this.lastProxyUp = undefined;
     this.downRounds = 0;
     this.notifiedUnavailable = false;
     this.proxyTried = false;
@@ -78,6 +82,7 @@ export class HeadroomStage {
       }
     }
     this.downRounds = 0;
+    this.lastProxyUp = true;
 
     const view = projectPayload(payload);
     if (!view) return this.skip(payload);
@@ -108,6 +113,7 @@ export class HeadroomStage {
     } catch (e) {
       log.warn({ event: "compress-failed", error: e instanceof Error ? e.message : String(e) });
       invalidateHealth(cfg.proxyUrl);
+      this.lastProxyUp = false;
       return this.skip(payload);
     }
 
@@ -134,6 +140,7 @@ export class HeadroomStage {
 
   private noteDown(payload: unknown, cfg: ResolvedHeadroom): unknown {
     this.downRounds += 1;
+    this.lastProxyUp = false;
     this.stats.skipped += 1;
     if (!this.notifiedUnavailable) {
       this.notifiedUnavailable = true;

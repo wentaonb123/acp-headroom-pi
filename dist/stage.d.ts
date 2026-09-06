@@ -17,6 +17,9 @@ export interface HeadroomStats {
 export declare class HeadroomStage {
     private readonly getConfig;
     stats: HeadroomStats;
+    /** Last known proxy reachability, for the status line: undefined = not yet
+     *  probed, true = last request-path check passed, false = down. */
+    lastProxyUp: boolean | undefined;
     /** Consecutive rounds with an unreachable proxy — the UI notice fires only
      *  on a confirmed outage, not a single stalled probe. */
     private downRounds;

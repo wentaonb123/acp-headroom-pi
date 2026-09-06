@@ -64,6 +64,18 @@ To disable billion-context-pi's delegate-agent feature, set the corresponding up
 
 `HEADROOM_PROXY_URL` (env) overrides `proxyUrl`. `ACP_HEADROOM_LOG` moves the log file (default `~/.pi/acp-headroom.log`, rotated at 10 MB); `ACP_DEBUG=1` enables debug events.
 
+## Status line
+
+In TUI sessions the extension adds one entry to pi's status bar (via `ui.setStatus`), updated live from the stage's internal stats:
+
+```
+headroom ready              # proxy up, nothing compressed yet this session
+headroom ↓12.3k tok · 3     # 3 payloads compressed, 12.3k tokens saved
+headroom off                # proxy unreachable — compression bypassed
+```
+
+In print/json/rpc modes no status is rendered.
+
 ## Failure model
 
 The headroom stage is strictly optional and fails open everywhere:

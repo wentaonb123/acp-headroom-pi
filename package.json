@@ -1,6 +1,6 @@
 {
 	"name": "acp-headroom-pi",
-	"version": "0.2.0",
+	"version": "0.3.0",
 	"description": "Fusion of billion-context-pi (model-driven context management) and headroom (mechanical payload compression) for the Pi coding agent.",
 	"main": "dist/index.js",
 	"types": "dist/index.d.ts",

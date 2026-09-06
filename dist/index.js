@@ -290,6 +290,9 @@ var HeadroomStage = class {
   }
   getConfig;
   stats = { applied: 0, savedTokens: 0, skipped: 0 };
+  /** Last known proxy reachability, for the status line: undefined = not yet
+   *  probed, true = last request-path check passed, false = down. */
+  lastProxyUp = void 0;
   /** Consecutive rounds with an unreachable proxy — the UI notice fires only
    *  on a confirmed outage, not a single stalled probe. */
   downRounds = 0;
@@ -297,6 +300,7 @@ var HeadroomStage = class {
   proxyTried = false;
   resetSession() {
     this.stats = { applied: 0, savedTokens: 0, skipped: 0 };
+    this.lastProxyUp = void 0;
     this.downRounds = 0;
     this.notifiedUnavailable = false;
     this.proxyTried = false;
@@ -331,6 +335,7 @@ var HeadroomStage = class {
       }
     }
     this.downRounds = 0;
+    this.lastProxyUp = true;
     const view = projectPayload(payload);
     if (!view) return this.skip(payload);
     if (view.messages.length < cfg.minMessages) return this.skip(payload);
@@ -356,6 +361,7 @@ var HeadroomStage = class {
     } catch (e) {
       log.warn({ event: "compress-failed", error: e instanceof Error ? e.message : String(e) });
       invalidateHealth(cfg.proxyUrl);
+      this.lastProxyUp = false;
       return this.skip(payload);
     }
     const compressed = toMessages(data.messages);
@@ -377,6 +383,7 @@ var HeadroomStage = class {
   }
   noteDown(payload, cfg) {
     this.downRounds += 1;
+    this.lastProxyUp = false;
     this.stats.skipped += 1;
     if (!this.notifiedUnavailable) {
       this.notifiedUnavailable = true;
@@ -4893,6 +4900,41 @@ async function retrieve(cfg, hash) {
   }
 }
 
+// src/status.ts
+var STATUS_KEY = "headroom";
+function statusText(stage, cfg) {
+  if (!cfg.enabled) return void 0;
+  if (stage.lastProxyUp === false) return "headroom off";
+  if (stage.stats.applied === 0) return "headroom ready";
+  return `headroom \u2193${formatTokens(stage.stats.savedTokens)} tok \xB7 ${stage.stats.applied}`;
+}
+function formatTokens(n) {
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}k`;
+  return String(n);
+}
+var HeadroomStatus = class {
+  ui;
+  /** Attach to a UI-capable context (TUI/RPC). No-op otherwise. */
+  attach(ui, hasUI) {
+    this.ui = hasUI ? ui : void 0;
+  }
+  /** Re-render from current stage + config state. Safe to call anywhere. */
+  update(stage, cfg) {
+    try {
+      this.ui?.setStatus(STATUS_KEY, statusText(stage, cfg));
+    } catch {
+    }
+  }
+  detach() {
+    try {
+      this.ui?.setStatus(STATUS_KEY, void 0);
+    } catch {
+    }
+    this.ui = void 0;
+  }
+};
+
 // src/index.ts
 var HEADROOM_PROMPT = `
 HEADROOM TOOL-OUTPUT COMPRESSION
@@ -4907,6 +4949,7 @@ function createFusionExtension() {
   return (pi) => {
     let cfg = HEADROOM_DEFAULTS;
     const stage = new HeadroomStage(() => cfg);
+    const status = new HeadroomStatus();
     createAcpExtension({})(pi);
     pi.on("session_start", async (_event, ctx) => {
       stage.resetSession();
@@ -4917,6 +4960,8 @@ function createFusionExtension() {
         log.warn({ event: "config-load-failed", error: e instanceof Error ? e.message : String(e) });
         cfg = HEADROOM_DEFAULTS;
       }
+      status.attach(ctx.ui, ctx.hasUI);
+      status.update(stage, cfg);
       if (!cfg.enabled) return;
       log.info({ event: "session-start", proxyUrl: cfg.proxyUrl, mode: cfg.mode });
       if (cfg.mode === "ccr") {
@@ -4926,6 +4971,8 @@ function createFusionExtension() {
         try {
           if (cfg.autoStart) stage.markProxyAttempted();
           const ok = await proxyHealthy(cfg.proxyUrl, cfg.timeoutMs) || cfg.autoStart && await startProxy(cfg.proxyUrl, cfg.timeoutMs);
+          stage.lastProxyUp = ok;
+          status.update(stage, cfg);
           if (!ok && ctx.hasUI) {
             ctx.ui.notify(
               `[ACP] Headroom proxy not found at ${cfg.proxyUrl} \u2014 mechanical compression is bypassed (ACP summaries unaffected). ${INSTALL_HINT}`
@@ -4941,11 +4988,14 @@ function createFusionExtension() {
       return { systemPrompt: `${event.systemPrompt ?? ""}
 ${HEADROOM_PROMPT}` };
     });
-    pi.on("before_provider_request", async (event) => {
+    pi.on("before_provider_request", async (event, ctx) => {
       if (!cfg.enabled) return;
-      return await stage.compress(event.payload);
+      const out = await stage.compress(event.payload);
+      status.update(stage, cfg);
+      return out;
     });
     pi.on("session_shutdown", () => {
+      status.detach();
       stopSpawnedProxies();
     });
   };

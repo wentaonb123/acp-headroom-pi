@@ -8,6 +8,7 @@ import {
 import { invalidateHealth, proxyHealthy, startProxy, stopSpawnedProxies } from "./proxy.js";
 import { HeadroomStage } from "./stage.js";
 import { makeRetrieveTool } from "./retrieve-tool.js";
+import { HeadroomStatus } from "./status.js";
 import { log } from "./log.js";
 
 /** Fusion of two upstream projects:
@@ -36,6 +37,7 @@ export function createFusionExtension(): ExtensionFactory {
   return (pi: ExtensionAPI) => {
     let cfg: ResolvedHeadroom = HEADROOM_DEFAULTS;
     const stage = new HeadroomStage(() => cfg);
+    const status = new HeadroomStatus();
 
     // 1. Upstream ACP layer, registered first so our handlers see its output
     //    (both `before_agent_start` and `before_provider_request` are chained:
@@ -51,6 +53,8 @@ export function createFusionExtension(): ExtensionFactory {
         log.warn({ event: "config-load-failed", error: e instanceof Error ? e.message : String(e) });
         cfg = HEADROOM_DEFAULTS;
       }
+      status.attach(ctx.ui, ctx.hasUI);
+      status.update(stage, cfg);
       if (!cfg.enabled) return;
 
       log.info({ event: "session-start", proxyUrl: cfg.proxyUrl, mode: cfg.mode });
@@ -67,6 +71,8 @@ export function createFusionExtension(): ExtensionFactory {
           const ok =
             (await proxyHealthy(cfg.proxyUrl, cfg.timeoutMs)) ||
             (cfg.autoStart && (await startProxy(cfg.proxyUrl, cfg.timeoutMs)));
+          stage.lastProxyUp = ok;
+          status.update(stage, cfg);
           if (!ok && ctx.hasUI) {
             ctx.ui.notify(
               `[ACP] Headroom proxy not found at ${cfg.proxyUrl} — mechanical compression is bypassed (ACP summaries unaffected). ${INSTALL_HINT}`,
@@ -84,12 +90,16 @@ export function createFusionExtension(): ExtensionFactory {
     });
 
     // 2. Headroom layer: optimize the exact bytes about to go on the wire.
-    pi.on("before_provider_request", async (event) => {
+    pi.on("before_provider_request", async (event, ctx) => {
       if (!cfg.enabled) return;
-      return await stage.compress(event.payload);
+      const out = await stage.compress(event.payload);
+      // Live status: reflect fresh stats + proxy health after every request.
+      status.update(stage, cfg);
+      return out;
     });
 
     pi.on("session_shutdown", () => {
+      status.detach();
       // Reclaim only proxies this process spawned — a user-launched instance
       // was never registered and is never touched.
       stopSpawnedProxies();

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.0
+
+### Added
+
+- **Status-line integration.** In TUI sessions the extension now adds a
+  `headroom` entry to pi's status bar via `ui.setStatus`, combining proxy
+  health with the stage's live stats: `headroom ready` (proxy up, nothing
+  compressed yet), `headroom ↓12.3k tok · 3` (three payloads compressed,
+  12.3k tokens saved), or `headroom off` (proxy unreachable, compression
+  bypassed). Updates ride the existing session_start probe and
+  before_provider_request events — no polling, no extra state. In
+  print/json/rpc modes nothing is rendered. `HeadroomStage` additionally
+  exposes `lastProxyUp` for status consumers.
+
 ## 0.2.0
 
 ### Changed — full rewrite as a pure fusion extension
