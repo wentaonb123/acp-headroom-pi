@@ -12,9 +12,8 @@ import {
   loadObservationPackEnabled,
   type ResolvedHeadroom,
 } from "./config.js";
-import { ACTION_FUSION_PROMPT, registerActionFusionTools } from "./action-fusion.js";
+import { registerActionFusionTools } from "./action-fusion.js";
 import {
-  OBSERVATION_THRESHOLD_BYTES,
   RECALL_MAX_BYTES,
   RECALL_MAX_LINES,
   type RecallChunk,
@@ -140,12 +139,8 @@ export function createFusionExtension(): ExtensionFactory {
     });
 
     pi.on("before_agent_start", (event) => {
-      const parts: string[] = [event.systemPrompt ?? ""];
-      if (cfg.enabled && cfg.mode === "ccr") parts.push(HEADROOM_PROMPT);
-      if (actionFusionOn) parts.push(ACTION_FUSION_PROMPT);
-      if (observationPackOn) parts.push(OBSERVATION_PACK_PROMPT);
-      if (parts.length === 1) return;
-      return { systemPrompt: parts.join("\n") };
+      if (!cfg.enabled || cfg.mode !== "ccr") return;
+      return { systemPrompt: `${event.systemPrompt ?? ""}\n${HEADROOM_PROMPT}` };
     });
 
     // 2. Headroom layer: optimize the exact bytes about to go on the wire.
@@ -179,15 +174,6 @@ export function createFusionExtension(): ExtensionFactory {
 }
 
 export default createFusionExtension();
-
-const OBSERVATION_PACK_PROMPT = `
-OBSERVATION PACK
-
-Very large tool results (>= ${Math.round(OBSERVATION_THRESHOLD_BYTES / 1024)}KB) are replaced after their first two appearances by a stable placeholder carrying an observation id, metadata, and head/tail excerpts. The full original is archived locally:
-- Call obs_recall({ id, offset }) to read exact pages of the archived original. Each call returns at most ~3KB / ${RECALL_MAX_LINES - 2} lines plus a next_offset — continue with that offset until eof: true.
-- Recall is byte-exact (never compressed), so prefer recalling the region you need over paging from the start: estimate the offset from the excerpt positions and original size, or page sequentially.
-- Do NOT re-run a tool just to see content that a placeholder holds — recall it instead.
-`;
 
 /** The obs_recall tool: exact paged reads from the per-session observation
  *  archive. Chunk limits stay below headroom's per-message threshold, so a

@@ -60,4 +60,3 @@ export declare function executeMutationThenRun<TDetails>({ toolCallId, absoluteP
 /** Replace pi's built-in `edit` and `write` with fused versions. Call once
  *  per session, only when the acp.json `actionFusion` key enables it. */
 export declare function registerActionFusionTools(pi: ExtensionAPI): void;
-export declare const ACTION_FUSION_PROMPT = "\nACTION FUSION\n\nThe edit and write tools accept an optional then_run: { command, timeout? } parameter. When the follow-up validation command for a file change is already known (build, test, run, restart, install, check), pass it in the SAME call instead of issuing a separate bash turn \u2014 the mutation and the command return as one combined observation. The command is skipped when the mutation fails; a non-zero command exit is reported but keeps the mutation.\n";

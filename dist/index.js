@@ -4734,11 +4734,6 @@ function registerActionFusionTools(pi) {
     }
   });
 }
-var ACTION_FUSION_PROMPT = `
-ACTION FUSION
-
-The edit and write tools accept an optional then_run: { command, timeout? } parameter. When the follow-up validation command for a file change is already known (build, test, run, restart, install, check), pass it in the SAME call instead of issuing a separate bash turn \u2014 the mutation and the command return as one combined observation. The command is skipped when the mutation fails; a non-zero command exit is reported but keeps the mutation.
-`;
 
 // src/observation-pack.ts
 import { createHash as createHash2 } from "crypto";
@@ -5482,12 +5477,9 @@ function createFusionExtension() {
       })();
     });
     pi.on("before_agent_start", (event) => {
-      const parts = [event.systemPrompt ?? ""];
-      if (cfg.enabled && cfg.mode === "ccr") parts.push(HEADROOM_PROMPT);
-      if (actionFusionOn) parts.push(ACTION_FUSION_PROMPT);
-      if (observationPackOn) parts.push(OBSERVATION_PACK_PROMPT);
-      if (parts.length === 1) return;
-      return { systemPrompt: parts.join("\n") };
+      if (!cfg.enabled || cfg.mode !== "ccr") return;
+      return { systemPrompt: `${event.systemPrompt ?? ""}
+${HEADROOM_PROMPT}` };
     });
     pi.on("before_provider_request", async (event, ctx) => {
       if (!cfg.enabled) return;
@@ -5507,14 +5499,6 @@ function createFusionExtension() {
   };
 }
 var index_default = createFusionExtension();
-var OBSERVATION_PACK_PROMPT = `
-OBSERVATION PACK
-
-Very large tool results (>= ${Math.round(OBSERVATION_THRESHOLD_BYTES / 1024)}KB) are replaced after their first two appearances by a stable placeholder carrying an observation id, metadata, and head/tail excerpts. The full original is archived locally:
-- Call obs_recall({ id, offset }) to read exact pages of the archived original. Each call returns at most ~3KB / ${RECALL_MAX_LINES - 2} lines plus a next_offset \u2014 continue with that offset until eof: true.
-- Recall is byte-exact (never compressed), so prefer recalling the region you need over paging from the start: estimate the offset from the excerpt positions and original size, or page sequentially.
-- Do NOT re-run a tool just to see content that a placeholder holds \u2014 recall it instead.
-`;
 function makeObsRecallTool(getRoot) {
   return {
     name: "obs_recall",
