@@ -49,3 +49,11 @@ export type ActionFusionSettings = boolean;
  *  global; an explicit project `false` overrides a global `true`. Default:
  *  true (an absent key keeps Action Fusion enabled). Never throws. */
 export declare function loadActionFusionEnabled(cwd: string): Promise<boolean>;
+/** ObservationPack (acp.json `observationPack` key). Borrowed from
+ *  NVLabs/SoL-Pi (MIT): tool results >= 64KB become stable handles with exact
+ *  paged recall (obs_recall) after their first two provider requests. On by
+ *  default — set false to keep sending oversized results in full. */
+export type ObservationPackSettings = boolean;
+/** Read only the `observationPack` key from acp.json. Same resolution as
+ *  actionFusion: project overrides global, default true. Never throws. */
+export declare function loadObservationPackEnabled(cwd: string): Promise<boolean>;

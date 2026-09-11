@@ -41,7 +41,7 @@ headroom proxy --port 8787        # or let the extension auto-start it
 
 ## Configuration
 
-One config file: `~/.pi/acp.json` (or `<project>/.pi/acp.json`, which overrides global keys). This plugin claims the `"headroom"` and `"actionFusion"` keys; every other key (including billion-context-pi's) belongs to the upstream extension and is read by it directly.
+One config file: `~/.pi/acp.json` (or `<project>/.pi/acp.json`, which overrides global keys). This plugin claims the `"headroom"`, `"actionFusion"` and `"observationPack"` keys; every other key (including billion-context-pi's) belongs to the upstream extension and is read by it directly.
 
 ```jsonc
 {
@@ -57,7 +57,8 @@ One config file: `~/.pi/acp.json` (or `<project>/.pi/acp.json`, which overrides 
     "timeoutMs": 3000,
     "autoStart": true                // spawn the proxy if it is not reachable
   },
-  "actionFusion": true               // on by default; false keeps pi's stock edit/write
+  "actionFusion": true,              // on by default; false keeps pi's stock edit/write
+  "observationPack": true            // on by default; see Observation Pack below
 }
 ```
 
@@ -82,6 +83,29 @@ The mutation and the command run in one tool call and return as a single combine
 - `timeout` is in seconds, optional, no default — pass one for commands that may hang.
 
 Default is `true` (an absent key keeps Action Fusion enabled); set `"actionFusion": false` to restore pi's stock tools. Config resolves at global or project scope; an explicit project `false` overrides a global `true`.
+
+## Observation Pack
+
+Borrowed from [NVLabs/SoL-Pi](https://github.com/NVlabs/SoL-Pi) (MIT). Very large tool results replayed on every provider request are the most expensive context there is — and past ~16K tokens even a 90% mechanical compression leaves thousands of lossy tokens. Observation Pack owns that size class instead:
+
+**Layering with headroom** (the size split, by threshold):
+
+| Tool result size | Owner | What the model sees |
+|---|---|---|
+| ≥ 64KB (`OBSERVATION_THRESHOLD_BYTES`) | **Observation Pack** | full text for its first 2 provider requests (headroom still compresses those wire copies for immediate value), then a ~1KB placeholder with head/tail excerpts + metadata |
+| 4KB – 64KB | **headroom** | mechanical compression via the local proxy (unchanged behavior) |
+| < 4KB | — | untouched |
+
+**How it works** (on by default; `"observationPack": false` disables):
+
+1. A pure-text, non-error tool result ≥ 64KB is content-addressed (`obs_<24hex>` from tool + call id + content hash) and archived under `~/.pi/acp-headroom/observations/<session-id>/objects/` (0600, symlink-refusing, existing objects verified byte-for-byte).
+2. For its first 2 provider requests the full text still ships (so the model can work with a fresh result immediately); headroom may lossy-compress those wire copies. Send-counting is stateless — a message has participated in exactly as many requests as there are assistant messages after it, so counts survive restarts.
+3. From the 3rd request on, the message is replaced with a stable placeholder: observation id, tool name, original size/lines, head and tail excerpts, and recall instructions.
+4. The model pulls exact pages with `obs_recall({ id, offset })` — byte-exact chunks capped at ~3KB / 60 lines, continuing via `next_offset` until `eof`.
+
+**Why the two stages never conflict**: Observation Pack projects at pi's `context` event (chained after billion-context-pi, never touching stored history), headroom at `before_provider_request`. Once packed, a message is ~1KB — below headroom's per-message threshold, so headroom never sees the original again. Conversely, recall chunks are capped below headroom's threshold, so **an exact recall is never mechanically re-compressed**. Everything fails open: a storage failure keeps the full text in context; the session log is never modified, so recall keeps working after compaction or resume.
+
+Archives are per-session and not auto-deleted; the JSONL `ledger.jsonl` next to the objects records every pack/recall event for post-hoc inspection.
 
 ## Status line
 

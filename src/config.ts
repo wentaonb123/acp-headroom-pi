@@ -110,6 +110,29 @@ export async function loadActionFusionEnabled(cwd: string): Promise<boolean> {
   return enabled;
 }
 
+/** ObservationPack (acp.json `observationPack` key). Borrowed from
+ *  NVLabs/SoL-Pi (MIT): tool results >= 64KB become stable handles with exact
+ *  paged recall (obs_recall) after their first two provider requests. On by
+ *  default — set false to keep sending oversized results in full. */
+export type ObservationPackSettings = boolean;
+
+/** Read only the `observationPack` key from acp.json. Same resolution as
+ *  actionFusion: project overrides global, default true. Never throws. */
+export async function loadObservationPackEnabled(cwd: string): Promise<boolean> {
+  let enabled = true;
+  for (const base of [path.join(homedir(), CONFIG_DIR_NAME), path.join(cwd, CONFIG_DIR_NAME)]) {
+    try {
+      const parsed: unknown = JSON.parse(await fs.readFile(path.join(base, "acp.json"), "utf8"));
+      if (isObject(parsed) && typeof parsed.observationPack === "boolean") {
+        enabled = parsed.observationPack;
+      }
+    } catch {
+      // missing file or bad JSON: keep whatever we already have
+    }
+  }
+  return enabled;
+}
+
 function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }

@@ -1,12 +1,30 @@
 import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { createAcpExtension } from "billion-context-pi";
+import type {
+  AgentToolResult,
+  ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
+import { Type, type Static } from "typebox";
 import {
   HEADROOM_DEFAULTS,
   loadActionFusionEnabled,
   loadHeadroomSettings,
+  loadObservationPackEnabled,
   type ResolvedHeadroom,
 } from "./config.js";
 import { ACTION_FUSION_PROMPT, registerActionFusionTools } from "./action-fusion.js";
+import {
+  OBSERVATION_THRESHOLD_BYTES,
+  RECALL_MAX_BYTES,
+  RECALL_MAX_LINES,
+  type RecallChunk,
+  isObservationId,
+  logLedger,
+  observationPath,
+  observationRoot,
+  projectObservations,
+  readRecallChunk,
+} from "./observation-pack.js";
 import { invalidateHealth, proxyHealthy, startProxy, stopSpawnedProxies } from "./proxy.js";
 import { HeadroomStage } from "./stage.js";
 import { makeRetrieveTool } from "./retrieve-tool.js";
@@ -35,10 +53,16 @@ Older tool results may have been mechanically compressed before entering your co
 const INSTALL_HINT =
   'Install it with: uv tool install --python 3.13 "headroom-ai[proxy]"';
 
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
 export function createFusionExtension(): ExtensionFactory {
   return (pi: ExtensionAPI) => {
     let cfg: ResolvedHeadroom = HEADROOM_DEFAULTS;
     let actionFusionOn = false;
+    let observationPackOn = false;
+    let sessionRoot = observationRoot("default");
     const stage = new HeadroomStage(() => cfg);
     const status = new HeadroomStatus();
 
@@ -70,6 +94,21 @@ export function createFusionExtension(): ExtensionFactory {
         actionFusionOn = false;
       }
       if (actionFusionOn) registerActionFusionTools(pi);
+
+      // ObservationPack (on by default): oversized tool results become stable
+      // handles with exact paged recall via obs_recall, after their first two
+      // provider requests. Layers with headroom: >= 64KB -> pack (placeholder
+      // is ~1KB, below headroom's per-message threshold), below -> headroom.
+      try {
+        observationPackOn = await loadObservationPackEnabled(ctx.cwd);
+      } catch (e) {
+        log.warn({ event: "observation-pack-config-failed", error: e instanceof Error ? e.message : String(e) });
+        observationPackOn = false;
+      }
+      if (observationPackOn) {
+        sessionRoot = observationRoot(ctx.sessionManager.getSessionId());
+        pi.registerTool(makeObsRecallTool(() => sessionRoot));
+      }
 
       if (!cfg.enabled) return;
 
@@ -104,6 +143,7 @@ export function createFusionExtension(): ExtensionFactory {
       const parts: string[] = [event.systemPrompt ?? ""];
       if (cfg.enabled && cfg.mode === "ccr") parts.push(HEADROOM_PROMPT);
       if (actionFusionOn) parts.push(ACTION_FUSION_PROMPT);
+      if (observationPackOn) parts.push(OBSERVATION_PACK_PROMPT);
       if (parts.length === 1) return;
       return { systemPrompt: parts.join("\n") };
     });
@@ -117,6 +157,18 @@ export function createFusionExtension(): ExtensionFactory {
       return out;
     });
 
+    // 3. ObservationPack projection (context event): runs chained AFTER the
+    //    upstream ACP handler (registered first), so it sees the ref-tagged
+    //    message array and replaces oversized tool results with placeholders.
+    //    Headroom then runs later at the wire layer and only ever sees the
+    //    ~1KB placeholders for packed messages — the two stages cannot claim
+    //    the same content in the same request.
+    pi.on("context", async (event) => {
+      if (!observationPackOn) return;
+      const projected = await projectObservations(event.messages, sessionRoot);
+      if (projected) return { messages: projected };
+    });
+
     pi.on("session_shutdown", () => {
       status.detach();
       // Reclaim only proxies this process spawned — a user-launched instance
@@ -127,3 +179,67 @@ export function createFusionExtension(): ExtensionFactory {
 }
 
 export default createFusionExtension();
+
+const OBSERVATION_PACK_PROMPT = `
+OBSERVATION PACK
+
+Very large tool results (>= ${Math.round(OBSERVATION_THRESHOLD_BYTES / 1024)}KB) are replaced after their first two appearances by a stable placeholder carrying an observation id, metadata, and head/tail excerpts. The full original is archived locally:
+- Call obs_recall({ id, offset }) to read exact pages of the archived original. Each call returns at most ~3KB / ${RECALL_MAX_LINES - 2} lines plus a next_offset — continue with that offset until eof: true.
+- Recall is byte-exact (never compressed), so prefer recalling the region you need over paging from the start: estimate the offset from the excerpt positions and original size, or page sequentially.
+- Do NOT re-run a tool just to see content that a placeholder holds — recall it instead.
+`;
+
+/** The obs_recall tool: exact paged reads from the per-session observation
+ *  archive. Chunk limits stay below headroom's per-message threshold, so a
+ *  recall result is never mechanically re-compressed. */
+function makeObsRecallTool(getRoot: () => string): ToolDefinition<typeof ObsRecallParams> {
+  return {
+    name: "obs_recall",
+    label: "Recall Observation",
+    description:
+      "Read a stored large tool result by observation id and byte offset. Exact, uncompressed pages (~3KB) from the ObservationPack archive; continue with the returned next_offset.",
+    promptSnippet: 'obs_recall({ id: "obs_...", offset: 0 })',
+    promptGuidelines: [
+      "Call when a placeholder references an observation id and you need the archived detail.",
+      "Use next_offset from the response to page further; stop at eof: true.",
+    ],
+    parameters: ObsRecallParams,
+    async execute(_toolCallId, params): Promise<AgentToolResult<unknown>> {
+      const { id, offset } = params as Static<typeof ObsRecallParams>;
+      if (!isObservationId(id)) throw new Error(`Unknown observation id: ${id}`);
+      let chunk: RecallChunk;
+      try {
+        chunk = await readRecallChunk(observationPath(getRoot(), id), offset ?? 0, {
+          maxBytes: RECALL_MAX_BYTES - 512,
+          maxLines: RECALL_MAX_LINES - 2,
+        });
+      } catch (error) {
+        if (isRecord(error) && error.code === "ENOENT") {
+          throw new Error(`Unknown observation id: ${id}`);
+        }
+        throw error;
+      }
+      const header = [
+        `[obs_recall id=${id} offset=${offset ?? 0} next_offset=${chunk.nextOffset} eof=${chunk.eof}]`,
+        `[chunk_bytes=${chunk.bytes} chunk_lines=${chunk.lines}; use next_offset to continue]`,
+      ].join("\n");
+      void logLedger(getRoot(), {
+        event: "recall",
+        id,
+        offset: offset ?? 0,
+        bytes: chunk.bytes,
+        lines: chunk.lines,
+        eof: chunk.eof,
+      }).catch(() => {});
+      return {
+        details: undefined,
+        content: [{ type: "text", text: `${header}\n${chunk.text}` }],
+      };
+    },
+  };
+}
+
+const ObsRecallParams = Type.Object({
+  id: Type.String({ description: "Observation id from a placeholder (obs_...)" }),
+  offset: Type.Optional(Type.Integer({ minimum: 0, description: "Byte offset, default 0" })),
+});

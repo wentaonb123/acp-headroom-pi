@@ -7,82 +7,6 @@ var __export = (target, all) => {
 // src/index.ts
 import { createAcpExtension } from "billion-context-pi";
 
-// src/config.ts
-import { homedir } from "os";
-import * as path from "path";
-import { promises as fs } from "fs";
-import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
-var HEADROOM_DEFAULTS = {
-  enabled: true,
-  proxyUrl: "http://127.0.0.1:8787",
-  mode: "ccr",
-  minMessages: 4,
-  minPayloadChars: 4e3,
-  frozenMessageCount: void 0,
-  timeoutMs: 3e3,
-  autoStart: true
-};
-var MODES = /* @__PURE__ */ new Set(["ccr", "lossy_inline", "lossless_then_lossy"]);
-function resolveHeadroom(raw) {
-  const s = raw === false ? { enabled: false } : isObject(raw) ? raw : {};
-  const proxyUrl = process.env.HEADROOM_PROXY_URL?.trim() || s.proxyUrl || HEADROOM_DEFAULTS.proxyUrl;
-  return {
-    enabled: s.enabled !== false,
-    proxyUrl: proxyUrl.replace(/\/+$/, ""),
-    mode: s.mode && MODES.has(s.mode) ? s.mode : HEADROOM_DEFAULTS.mode,
-    minMessages: positiveInt(s.minMessages, HEADROOM_DEFAULTS.minMessages),
-    minPayloadChars: positiveInt(s.minPayloadChars, HEADROOM_DEFAULTS.minPayloadChars),
-    frozenMessageCount: nonNegativeInt(s.frozenMessageCount),
-    timeoutMs: positiveInt(s.timeoutMs, HEADROOM_DEFAULTS.timeoutMs),
-    autoStart: s.autoStart !== false
-  };
-}
-async function loadHeadroomSettings(cwd) {
-  let merged;
-  for (const base of [path.join(homedir(), CONFIG_DIR_NAME), path.join(cwd, CONFIG_DIR_NAME)]) {
-    try {
-      const parsed = JSON.parse(await fs.readFile(path.join(base, "acp.json"), "utf8"));
-      if (isObject(parsed) && "headroom" in parsed) merged = parsed.headroom;
-    } catch {
-    }
-  }
-  return resolveHeadroom(merged);
-}
-async function loadActionFusionEnabled(cwd) {
-  let enabled = true;
-  for (const base of [path.join(homedir(), CONFIG_DIR_NAME), path.join(cwd, CONFIG_DIR_NAME)]) {
-    try {
-      const parsed = JSON.parse(await fs.readFile(path.join(base, "acp.json"), "utf8"));
-      if (isObject(parsed) && typeof parsed.actionFusion === "boolean") {
-        enabled = parsed.actionFusion;
-      }
-    } catch {
-    }
-  }
-  return enabled;
-}
-function isObject(v) {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
-}
-function positiveInt(v, fallback) {
-  return typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.floor(v) : fallback;
-}
-function nonNegativeInt(v) {
-  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.floor(v) : void 0;
-}
-
-// src/action-fusion.ts
-import { createHash } from "crypto";
-import { readFile, realpath } from "fs/promises";
-import { homedir as homedir3 } from "os";
-import { basename, dirname as dirname2, resolve } from "path";
-import { fileURLToPath } from "url";
-import {
-  createBashToolDefinition,
-  createEditToolDefinition,
-  createWriteToolDefinition
-} from "@earendil-works/pi-coding-agent";
-
 // node_modules/typebox/build/system/memory/memory.mjs
 var memory_exports = {};
 __export(memory_exports, {
@@ -4492,6 +4416,95 @@ __export(typebox_exports, {
   With: () => With2
 });
 
+// src/config.ts
+import { homedir } from "os";
+import * as path from "path";
+import { promises as fs } from "fs";
+import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
+var HEADROOM_DEFAULTS = {
+  enabled: true,
+  proxyUrl: "http://127.0.0.1:8787",
+  mode: "ccr",
+  minMessages: 4,
+  minPayloadChars: 4e3,
+  frozenMessageCount: void 0,
+  timeoutMs: 3e3,
+  autoStart: true
+};
+var MODES = /* @__PURE__ */ new Set(["ccr", "lossy_inline", "lossless_then_lossy"]);
+function resolveHeadroom(raw) {
+  const s = raw === false ? { enabled: false } : isObject(raw) ? raw : {};
+  const proxyUrl = process.env.HEADROOM_PROXY_URL?.trim() || s.proxyUrl || HEADROOM_DEFAULTS.proxyUrl;
+  return {
+    enabled: s.enabled !== false,
+    proxyUrl: proxyUrl.replace(/\/+$/, ""),
+    mode: s.mode && MODES.has(s.mode) ? s.mode : HEADROOM_DEFAULTS.mode,
+    minMessages: positiveInt(s.minMessages, HEADROOM_DEFAULTS.minMessages),
+    minPayloadChars: positiveInt(s.minPayloadChars, HEADROOM_DEFAULTS.minPayloadChars),
+    frozenMessageCount: nonNegativeInt(s.frozenMessageCount),
+    timeoutMs: positiveInt(s.timeoutMs, HEADROOM_DEFAULTS.timeoutMs),
+    autoStart: s.autoStart !== false
+  };
+}
+async function loadHeadroomSettings(cwd) {
+  let merged;
+  for (const base of [path.join(homedir(), CONFIG_DIR_NAME), path.join(cwd, CONFIG_DIR_NAME)]) {
+    try {
+      const parsed = JSON.parse(await fs.readFile(path.join(base, "acp.json"), "utf8"));
+      if (isObject(parsed) && "headroom" in parsed) merged = parsed.headroom;
+    } catch {
+    }
+  }
+  return resolveHeadroom(merged);
+}
+async function loadActionFusionEnabled(cwd) {
+  let enabled = true;
+  for (const base of [path.join(homedir(), CONFIG_DIR_NAME), path.join(cwd, CONFIG_DIR_NAME)]) {
+    try {
+      const parsed = JSON.parse(await fs.readFile(path.join(base, "acp.json"), "utf8"));
+      if (isObject(parsed) && typeof parsed.actionFusion === "boolean") {
+        enabled = parsed.actionFusion;
+      }
+    } catch {
+    }
+  }
+  return enabled;
+}
+async function loadObservationPackEnabled(cwd) {
+  let enabled = true;
+  for (const base of [path.join(homedir(), CONFIG_DIR_NAME), path.join(cwd, CONFIG_DIR_NAME)]) {
+    try {
+      const parsed = JSON.parse(await fs.readFile(path.join(base, "acp.json"), "utf8"));
+      if (isObject(parsed) && typeof parsed.observationPack === "boolean") {
+        enabled = parsed.observationPack;
+      }
+    } catch {
+    }
+  }
+  return enabled;
+}
+function isObject(v) {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+function positiveInt(v, fallback) {
+  return typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.floor(v) : fallback;
+}
+function nonNegativeInt(v) {
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.floor(v) : void 0;
+}
+
+// src/action-fusion.ts
+import { createHash } from "crypto";
+import { readFile, realpath } from "fs/promises";
+import { homedir as homedir3 } from "os";
+import { basename, dirname as dirname2, resolve } from "path";
+import { fileURLToPath } from "url";
+import {
+  createBashToolDefinition,
+  createEditToolDefinition,
+  createWriteToolDefinition
+} from "@earendil-works/pi-coding-agent";
+
 // src/log.ts
 import { appendFileSync, statSync, renameSync, mkdirSync } from "fs";
 import { homedir as homedir2 } from "os";
@@ -4727,6 +4740,245 @@ ACTION FUSION
 The edit and write tools accept an optional then_run: { command, timeout? } parameter. When the follow-up validation command for a file change is already known (build, test, run, restart, install, check), pass it in the SAME call instead of issuing a separate bash turn \u2014 the mutation and the command return as one combined observation. The command is skipped when the mutation fails; a non-zero command exit is reported but keeps the mutation.
 `;
 
+// src/observation-pack.ts
+import { createHash as createHash2 } from "crypto";
+import { constants } from "fs";
+import { lstat, mkdir, open, appendFile } from "fs/promises";
+import { homedir as homedir4 } from "os";
+import { dirname as dirname3, join as join3 } from "path";
+var OBSERVATION_THRESHOLD_BYTES = 64 * 1024;
+var FULL_SENDS = 2;
+var PLACEHOLDER_EXCERPT_BYTES = 1024;
+var RECALL_MAX_BYTES = 3 * 1024;
+var RECALL_MAX_LINES = 60;
+var RECALL_HEADER_RESERVE_BYTES = 512;
+var RECALL_HEADER_LINES = 2;
+var RECALL_LIMITS = {
+  maxBytes: RECALL_MAX_BYTES - RECALL_HEADER_RESERVE_BYTES,
+  maxLines: RECALL_MAX_LINES - RECALL_HEADER_LINES
+};
+var CHARS_PER_TOKEN = 4;
+var OBSERVATION_ID_PATTERN = /^obs_[a-f0-9]{24}$/u;
+var READ_OBJECT_FLAGS = constants.O_RDONLY | constants.O_NOFOLLOW;
+var CREATE_OBJECT_FLAGS = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW;
+function hash(value) {
+  return createHash2("sha256").update(value).digest("hex");
+}
+function estimateTokens(text) {
+  return Math.ceil(text.length / CHARS_PER_TOKEN);
+}
+function countLines(text) {
+  if (text.length === 0) return 0;
+  let lines = text.endsWith("\n") ? 0 : 1;
+  for (const character of text) {
+    if (character === "\n") lines += 1;
+  }
+  return lines;
+}
+function countBufferLines(buffer) {
+  if (buffer.length === 0) return 0;
+  let lines = buffer[buffer.length - 1] === 10 ? 0 : 1;
+  for (const byte of buffer) {
+    if (byte === 10) lines += 1;
+  }
+  return lines;
+}
+function isPureTextResult(message) {
+  return message.role === "toolResult" && message.isError !== true && Array.isArray(message.content) && message.content.length > 0 && message.content.every((block) => isRecord(block) && block.type === "text" && typeof block.text === "string");
+}
+function isRecord(v) {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+function textFromResult(message) {
+  return message.content.map((block) => block.text).join("\n");
+}
+function toolCallIdOf(message) {
+  const id = message.toolCallId;
+  return typeof id === "string" ? id : "";
+}
+function toolNameOf(message) {
+  const name = message.toolName;
+  return typeof name === "string" ? name : "";
+}
+function isObservationId(id) {
+  return OBSERVATION_ID_PATTERN.test(id);
+}
+function observationRoot(sessionId) {
+  return join3(homedir4(), ".pi", "acp-headroom", "observations", sessionId || "default");
+}
+function observationPath(root, id) {
+  return join3(root, "objects", `${id}.txt`);
+}
+function createObservation(message, root) {
+  const text = textFromResult(message);
+  const bytes = Buffer.byteLength(text, "utf8");
+  if (bytes <= OBSERVATION_THRESHOLD_BYTES) return void 0;
+  const contentHash = hash(text);
+  const id = `obs_${hash(`${toolNameOf(message)}\0${toolCallIdOf(message)}\0${contentHash}`).slice(0, 24)}`;
+  return {
+    id,
+    contentHash,
+    filePath: observationPath(root, id),
+    toolName: toolNameOf(message),
+    text,
+    bytes,
+    lines: countLines(text),
+    tokens: estimateTokens(text)
+  };
+}
+async function ensureStored(observation) {
+  const directoryPath = dirname3(observation.filePath);
+  await mkdir(directoryPath, { recursive: true, mode: 448 });
+  const directoryStats = await lstat(directoryPath);
+  if (!directoryStats.isDirectory() || directoryStats.isSymbolicLink()) {
+    throw new Error(`Observation directory is not a regular directory for ${observation.id}`);
+  }
+  let handle;
+  try {
+    handle = await open(observation.filePath, CREATE_OBJECT_FLAGS, 384);
+    await handle.writeFile(observation.text, { encoding: "utf8" });
+  } catch (error) {
+    if (!isRecord(error) || error.code !== "EEXIST") throw error;
+    const existingHandle = await open(observation.filePath, READ_OBJECT_FLAGS);
+    try {
+      const existing = await existingHandle.stat();
+      if (!existing.isFile()) {
+        throw new Error(`Content-addressed observation is not a regular file for ${observation.id}`);
+      }
+      if (existing.size !== observation.bytes) {
+        throw new Error(`Content-addressed observation size mismatch for ${observation.id}`);
+      }
+      const existingContent = await existingHandle.readFile();
+      if (hash(existingContent) !== observation.contentHash) {
+        throw new Error(`Content-addressed observation hash mismatch for ${observation.id}`);
+      }
+    } finally {
+      await existingHandle.close();
+    }
+  } finally {
+    await handle?.close();
+  }
+}
+function completeLineExcerpt(text, budgetBytes, fromEnd) {
+  const lines = text.split(/(?<=\n)/);
+  const selected = [];
+  let selectedBytes = 0;
+  let index = fromEnd ? lines.length - 1 : 0;
+  while (index >= 0 && index < lines.length) {
+    const line = lines[index];
+    if (line === void 0) break;
+    const lineBytes = Buffer.byteLength(line, "utf8");
+    if (selectedBytes + lineBytes > budgetBytes) break;
+    if (fromEnd) selected.unshift(line);
+    else selected.push(line);
+    selectedBytes += lineBytes;
+    index += fromEnd ? -1 : 1;
+  }
+  return selected.join("");
+}
+function placeholderFor(observation) {
+  const headBudget = Math.floor(PLACEHOLDER_EXCERPT_BYTES / 2);
+  const tailBudget = PLACEHOLDER_EXCERPT_BYTES - headBudget;
+  const head = completeLineExcerpt(observation.text, headBudget, false);
+  const tail = completeLineExcerpt(observation.text, tailBudget, true);
+  return [
+    `[large tool result replaced after its first ${FULL_SENDS} provider requests]`,
+    `id: ${observation.id}`,
+    `tool: ${observation.toolName}`,
+    `original_bytes: ${observation.bytes}`,
+    `original_lines: ${observation.lines}`,
+    `estimated_tokens: ${observation.tokens}`,
+    `retrieve: call obs_recall with {"id":"${observation.id}","offset":0}; continue with returned next_offset`,
+    `[first complete lines, up to ${headBudget} bytes]`,
+    head,
+    `[middle omitted; last complete lines, up to ${tailBudget} bytes]`,
+    tail,
+    `[${observation.bytes} original bytes omitted]`
+  ].join("\n");
+}
+async function projectObservations(messages, root) {
+  const priorAssistantCounts = new Array(messages.length);
+  let assistantCount = 0;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    priorAssistantCounts[index] = assistantCount;
+    if (messages[index]?.role === "assistant") assistantCount += 1;
+  }
+  let changed = false;
+  const out = [...messages];
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index];
+    if (priorAssistantCounts[index] < FULL_SENDS) continue;
+    if (!isPureTextResult(message)) continue;
+    try {
+      const observation = createObservation(message, root);
+      if (!observation) continue;
+      await ensureStored(observation);
+      out[index] = { ...message, content: [{ type: "text", text: placeholderFor(observation) }] };
+      changed = true;
+      void logLedger(root, {
+        event: "placeholder",
+        id: observation.id,
+        tool: observation.toolName,
+        originalBytes: observation.bytes,
+        originalTokens: observation.tokens,
+        priorSends: priorAssistantCounts[index]
+      }).catch(() => {
+      });
+    } catch (error) {
+      void logLedger(root, {
+        event: "pack-failed",
+        error: error instanceof Error ? error.message : String(error)
+      }).catch(() => {
+      });
+    }
+  }
+  return changed ? out : void 0;
+}
+function trimUtf8End(buffer, limit) {
+  let end = limit;
+  while (end > 0 && end < buffer.length && ((buffer[end] ?? 0) & 192) === 128) end -= 1;
+  return end;
+}
+async function readRecallChunk(path3, offset, limits) {
+  const handle = await open(path3, READ_OBJECT_FLAGS);
+  try {
+    const fileStats = await handle.stat();
+    if (!fileStats.isFile()) throw new Error("Stored observation is not a regular file");
+    if (offset > fileStats.size) throw new Error(`Offset ${offset} exceeds observation size ${fileStats.size}`);
+    const available = Math.max(0, fileStats.size - offset);
+    const buffer = Buffer.alloc(Math.min(available, limits.maxBytes + 4));
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, offset);
+    let end = Math.min(bytesRead, limits.maxBytes);
+    let newlineCount = 0;
+    for (let index = 0; index < end; index += 1) {
+      if (buffer[index] !== 10) continue;
+      newlineCount += 1;
+      if (newlineCount === limits.maxLines) {
+        end = index + 1;
+        break;
+      }
+    }
+    end = trimUtf8End(buffer, end);
+    const chunk = buffer.subarray(0, end);
+    const nextOffset = offset + chunk.length;
+    return {
+      text: chunk.toString("utf8"),
+      bytes: chunk.length,
+      lines: countBufferLines(chunk),
+      nextOffset,
+      eof: nextOffset >= fileStats.size
+    };
+  } finally {
+    await handle.close();
+  }
+}
+async function logLedger(root, entry) {
+  const path3 = join3(root, "ledger.jsonl");
+  await mkdir(dirname3(path3), { recursive: true, mode: 448 });
+  await appendFile(path3, `${JSON.stringify({ timestamp: (/* @__PURE__ */ new Date()).toISOString(), ...entry })}
+`, "utf8");
+}
+
 // src/proxy.ts
 import { spawn, execFile } from "child_process";
 import { HeadroomClient } from "headroom-ai";
@@ -4854,7 +5106,7 @@ function portOf(baseUrl) {
 import { HeadroomClient as HeadroomClient2 } from "headroom-ai";
 
 // src/format.ts
-function isRecord(v) {
+function isRecord2(v) {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 function plainText(content) {
@@ -4866,7 +5118,7 @@ function plainText(content) {
         parts.push(block);
         continue;
       }
-      if (isRecord(block) && block.type === "text" && typeof block.text === "string") {
+      if (isRecord2(block) && block.type === "text" && typeof block.text === "string") {
         parts.push(block.text);
         continue;
       }
@@ -4877,12 +5129,12 @@ function plainText(content) {
   return void 0;
 }
 function projectPayload(payload) {
-  if (!isRecord(payload)) return reject("payload-not-object");
+  if (!isRecord2(payload)) return reject("payload-not-object");
   if (!Array.isArray(payload.messages)) return reject("no-messages-array");
   const messages = [];
   const roles = [];
   for (const m of payload.messages) {
-    if (!isRecord(m) || typeof m.role !== "string") return reject("message-missing-role");
+    if (!isRecord2(m) || typeof m.role !== "string") return reject("message-missing-role");
     const text = plainText(m.content);
     if (text === void 0) return reject("structured-content");
     roles.push(m.role);
@@ -4894,7 +5146,7 @@ function projectPayload(payload) {
     apply: (compressed) => {
       const next = compressed.length === original.length ? compressed.map((c, i) => {
         const src = original[i];
-        if (isRecord(src)) return { ...src, content: c.content };
+        if (isRecord2(src)) return { ...src, content: c.content };
         return { role: roles[i] ?? c.role, content: c.content };
       }) : compressed.map((c) => ({ role: c.role, content: c.content }));
       return { ...payload, messages: next };
@@ -5083,24 +5335,24 @@ function makeRetrieveTool(getConfig) {
     ],
     parameters: RetrieveParams,
     async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
-      const { hash } = params;
+      const { hash: hash2 } = params;
       const cfg = getConfig();
-      const text = await retrieve(cfg, hash);
+      const text = await retrieve(cfg, hash2);
       return {
         details: void 0,
         content: [
           {
             type: "text",
-            text: text ?? `No stored original found for hash ${hash}.`
+            text: text ?? `No stored original found for hash ${hash2}.`
           }
         ]
       };
     }
   };
 }
-async function retrieve(cfg, hash) {
-  if (!HASH_RE.test(hash)) return null;
-  const url = new URL(`/v1/retrieve/${hash}`, cfg.proxyUrl);
+async function retrieve(cfg, hash2) {
+  if (!HASH_RE.test(hash2)) return null;
+  const url = new URL(`/v1/retrieve/${hash2}`, cfg.proxyUrl);
   try {
     const resp = await fetch(url, { signal: AbortSignal.timeout(1e4) });
     if (!resp.ok) {
@@ -5118,7 +5370,7 @@ async function retrieve(cfg, hash) {
     log.warn({ event: "retrieve-unexpected-shape", sample: JSON.stringify(data).slice(0, 200) });
     return null;
   } catch (e) {
-    log.warn({ event: "retrieve-failed", hash, error: e instanceof Error ? e.message : String(e) });
+    log.warn({ event: "retrieve-failed", hash: hash2, error: e instanceof Error ? e.message : String(e) });
     return null;
   }
 }
@@ -5168,10 +5420,15 @@ Older tool results may have been mechanically compressed before entering your co
 - Retrieved originals re-enter context at full size \u2014 fetch only what the current step needs.
 `;
 var INSTALL_HINT = 'Install it with: uv tool install --python 3.13 "headroom-ai[proxy]"';
+function isRecord3(v) {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
 function createFusionExtension() {
   return (pi) => {
     let cfg = HEADROOM_DEFAULTS;
     let actionFusionOn = false;
+    let observationPackOn = false;
+    let sessionRoot = observationRoot("default");
     const stage = new HeadroomStage(() => cfg);
     const status = new HeadroomStatus();
     createAcpExtension({})(pi);
@@ -5193,6 +5450,16 @@ function createFusionExtension() {
         actionFusionOn = false;
       }
       if (actionFusionOn) registerActionFusionTools(pi);
+      try {
+        observationPackOn = await loadObservationPackEnabled(ctx.cwd);
+      } catch (e) {
+        log.warn({ event: "observation-pack-config-failed", error: e instanceof Error ? e.message : String(e) });
+        observationPackOn = false;
+      }
+      if (observationPackOn) {
+        sessionRoot = observationRoot(ctx.sessionManager.getSessionId());
+        pi.registerTool(makeObsRecallTool(() => sessionRoot));
+      }
       if (!cfg.enabled) return;
       log.info({ event: "session-start", proxyUrl: cfg.proxyUrl, mode: cfg.mode });
       if (cfg.mode === "ccr") {
@@ -5218,6 +5485,7 @@ function createFusionExtension() {
       const parts = [event.systemPrompt ?? ""];
       if (cfg.enabled && cfg.mode === "ccr") parts.push(HEADROOM_PROMPT);
       if (actionFusionOn) parts.push(ACTION_FUSION_PROMPT);
+      if (observationPackOn) parts.push(OBSERVATION_PACK_PROMPT);
       if (parts.length === 1) return;
       return { systemPrompt: parts.join("\n") };
     });
@@ -5227,6 +5495,11 @@ function createFusionExtension() {
       status.update(stage, cfg);
       return out;
     });
+    pi.on("context", async (event) => {
+      if (!observationPackOn) return;
+      const projected = await projectObservations(event.messages, sessionRoot);
+      if (projected) return { messages: projected };
+    });
     pi.on("session_shutdown", () => {
       status.detach();
       stopSpawnedProxies();
@@ -5234,6 +5507,65 @@ function createFusionExtension() {
   };
 }
 var index_default = createFusionExtension();
+var OBSERVATION_PACK_PROMPT = `
+OBSERVATION PACK
+
+Very large tool results (>= ${Math.round(OBSERVATION_THRESHOLD_BYTES / 1024)}KB) are replaced after their first two appearances by a stable placeholder carrying an observation id, metadata, and head/tail excerpts. The full original is archived locally:
+- Call obs_recall({ id, offset }) to read exact pages of the archived original. Each call returns at most ~3KB / ${RECALL_MAX_LINES - 2} lines plus a next_offset \u2014 continue with that offset until eof: true.
+- Recall is byte-exact (never compressed), so prefer recalling the region you need over paging from the start: estimate the offset from the excerpt positions and original size, or page sequentially.
+- Do NOT re-run a tool just to see content that a placeholder holds \u2014 recall it instead.
+`;
+function makeObsRecallTool(getRoot) {
+  return {
+    name: "obs_recall",
+    label: "Recall Observation",
+    description: "Read a stored large tool result by observation id and byte offset. Exact, uncompressed pages (~3KB) from the ObservationPack archive; continue with the returned next_offset.",
+    promptSnippet: 'obs_recall({ id: "obs_...", offset: 0 })',
+    promptGuidelines: [
+      "Call when a placeholder references an observation id and you need the archived detail.",
+      "Use next_offset from the response to page further; stop at eof: true."
+    ],
+    parameters: ObsRecallParams,
+    async execute(_toolCallId, params) {
+      const { id, offset } = params;
+      if (!isObservationId(id)) throw new Error(`Unknown observation id: ${id}`);
+      let chunk;
+      try {
+        chunk = await readRecallChunk(observationPath(getRoot(), id), offset ?? 0, {
+          maxBytes: RECALL_MAX_BYTES - 512,
+          maxLines: RECALL_MAX_LINES - 2
+        });
+      } catch (error) {
+        if (isRecord3(error) && error.code === "ENOENT") {
+          throw new Error(`Unknown observation id: ${id}`);
+        }
+        throw error;
+      }
+      const header = [
+        `[obs_recall id=${id} offset=${offset ?? 0} next_offset=${chunk.nextOffset} eof=${chunk.eof}]`,
+        `[chunk_bytes=${chunk.bytes} chunk_lines=${chunk.lines}; use next_offset to continue]`
+      ].join("\n");
+      void logLedger(getRoot(), {
+        event: "recall",
+        id,
+        offset: offset ?? 0,
+        bytes: chunk.bytes,
+        lines: chunk.lines,
+        eof: chunk.eof
+      }).catch(() => {
+      });
+      return {
+        details: void 0,
+        content: [{ type: "text", text: `${header}
+${chunk.text}` }]
+      };
+    }
+  };
+}
+var ObsRecallParams = typebox_exports.Object({
+  id: typebox_exports.String({ description: "Observation id from a placeholder (obs_...)" }),
+  offset: typebox_exports.Optional(typebox_exports.Integer({ minimum: 0, description: "Byte offset, default 0" }))
+});
 export {
   createFusionExtension,
   index_default as default
