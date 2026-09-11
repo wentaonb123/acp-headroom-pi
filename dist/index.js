@@ -48,6 +48,19 @@ async function loadHeadroomSettings(cwd) {
   }
   return resolveHeadroom(merged);
 }
+async function loadActionFusionEnabled(cwd) {
+  let enabled = true;
+  for (const base of [path.join(homedir(), CONFIG_DIR_NAME), path.join(cwd, CONFIG_DIR_NAME)]) {
+    try {
+      const parsed = JSON.parse(await fs.readFile(path.join(base, "acp.json"), "utf8"));
+      if (isObject(parsed) && typeof parsed.actionFusion === "boolean") {
+        enabled = parsed.actionFusion;
+      }
+    } catch {
+    }
+  }
+  return enabled;
+}
 function isObject(v) {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
@@ -58,379 +71,17 @@ function nonNegativeInt(v) {
   return typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.floor(v) : void 0;
 }
 
-// src/proxy.ts
-import { spawn, execFile } from "child_process";
-import { HeadroomClient } from "headroom-ai";
-
-// src/log.ts
-import { appendFileSync, statSync, renameSync, mkdirSync } from "fs";
-import { homedir as homedir2 } from "os";
-import * as path2 from "path";
-var LOG_FILE = process.env.ACP_HEADROOM_LOG ?? path2.join(homedir2(), ".pi", "acp-headroom.log");
-var MAX_BYTES = 10 * 1024 * 1024;
-var debugEnabled = process.env.ACP_DEBUG === "1" || process.env.ACP_DEBUG === "true";
-function rotateIfNeeded() {
-  try {
-    if (statSync(LOG_FILE).size > MAX_BYTES) renameSync(LOG_FILE, `${LOG_FILE}.1`);
-  } catch {
-  }
-}
-function write(level, event) {
-  try {
-    mkdirSync(path2.dirname(LOG_FILE), { recursive: true });
-    rotateIfNeeded();
-    appendFileSync(
-      LOG_FILE,
-      `${JSON.stringify({ ts: (/* @__PURE__ */ new Date()).toISOString(), level, ...event })}
-`,
-      "utf8"
-    );
-  } catch {
-  }
-}
-var log = {
-  info: (event) => write("info", event),
-  warn: (event) => write("warn", event),
-  error: (event) => write("error", event),
-  debug: (event) => {
-    if (debugEnabled) write("info", event);
-  }
-};
-
-// src/proxy.ts
-var HEALTH_TTL_MS = 3e4;
-var NEGATIVE_TTL_MS = 15e3;
-var STARTUP_POLL_MS = 500;
-var STARTUP_DEADLINE_MS = 2e4;
-var healthByOrigin = /* @__PURE__ */ new Map();
-var spawned = /* @__PURE__ */ new Set();
-var starting = /* @__PURE__ */ new Map();
-function stateFor(baseUrl) {
-  const origin = originOf(baseUrl);
-  let s = healthByOrigin.get(origin);
-  if (!s) {
-    s = { healthyUntil: 0, unhealthyUntil: 0 };
-    healthByOrigin.set(origin, s);
-  }
-  return s;
-}
-function originOf(baseUrl) {
-  try {
-    return new URL(baseUrl).origin;
-  } catch {
-    return baseUrl;
-  }
-}
-function invalidateHealth(baseUrl) {
-  if (baseUrl) healthByOrigin.delete(originOf(baseUrl));
-  else healthByOrigin.clear();
-}
-async function healthOnce(baseUrl, timeoutMs) {
-  try {
-    const client = new HeadroomClient({ baseUrl, timeout: timeoutMs, retries: 0, fallback: false });
-    await client.health();
-    return true;
-  } catch {
-    return false;
-  }
-}
-async function proxyHealthy(baseUrl, timeoutMs) {
-  const now = Date.now();
-  const s = stateFor(baseUrl);
-  if (now < s.healthyUntil) return true;
-  if (now < s.unhealthyUntil) return false;
-  if (await healthOnce(baseUrl, timeoutMs) || await healthOnce(baseUrl, timeoutMs)) {
-    s.healthyUntil = Date.now() + HEALTH_TTL_MS;
-    s.unhealthyUntil = 0;
-    return true;
-  }
-  s.unhealthyUntil = Date.now() + NEGATIVE_TTL_MS;
-  return false;
-}
-function startProxy(baseUrl, timeoutMs) {
-  const key = originOf(baseUrl);
-  const inFlight = starting.get(key);
-  if (inFlight) return inFlight;
-  const attempt = spawnProxy(baseUrl, timeoutMs).finally(() => starting.delete(key));
-  starting.set(key, attempt);
-  return attempt;
-}
-async function spawnProxy(baseUrl, timeoutMs) {
-  const port = portOf(baseUrl);
-  const commands = [
-    { cmd: "headroom", args: ["proxy", "--port", port] },
-    { cmd: "uv", args: ["tool", "run", "--from", "headroom-ai[proxy]", "headroom", "proxy", "--port", port] }
-  ];
-  for (const { cmd, args } of commands) {
-    let failed = false;
-    let child;
-    try {
-      child = spawn(cmd, args, { detached: true, stdio: "ignore", windowsHide: true });
-    } catch {
-      continue;
-    }
-    child.on("error", () => {
-      failed = true;
-      spawned.delete(child);
-    });
-    spawned.add(child);
-    child.unref();
-    const deadline = Date.now() + STARTUP_DEADLINE_MS;
-    while (!failed && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, STARTUP_POLL_MS));
-      if (await healthOnce(baseUrl, timeoutMs)) {
-        const s = stateFor(baseUrl);
-        s.healthyUntil = Date.now() + HEALTH_TTL_MS;
-        s.unhealthyUntil = 0;
-        return true;
-      }
-    }
-    killTree(child);
-    spawned.delete(child);
-  }
-  log.warn({ event: "proxy-start-failed", baseUrl });
-  return false;
-}
-function killTree(child) {
-  try {
-    if (process.platform === "win32" && child.pid) {
-      execFile("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true }, () => {
-      });
-    } else {
-      child.kill();
-    }
-  } catch {
-    try {
-      child.kill();
-    } catch {
-    }
-  }
-}
-function stopSpawnedProxies() {
-  for (const child of spawned) killTree(child);
-  spawned.clear();
-}
-function portOf(baseUrl) {
-  try {
-    return new URL(baseUrl).port || "8787";
-  } catch {
-    return "8787";
-  }
-}
-
-// src/stage.ts
-import { HeadroomClient as HeadroomClient2 } from "headroom-ai";
-
-// src/format.ts
-function isRecord(v) {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
-}
-function plainText(content) {
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    const parts = [];
-    for (const block of content) {
-      if (typeof block === "string") {
-        parts.push(block);
-        continue;
-      }
-      if (isRecord(block) && block.type === "text" && typeof block.text === "string") {
-        parts.push(block.text);
-        continue;
-      }
-      return void 0;
-    }
-    return parts.join("\n");
-  }
-  return void 0;
-}
-function projectPayload(payload) {
-  if (!isRecord(payload)) return reject("payload-not-object");
-  if (!Array.isArray(payload.messages)) return reject("no-messages-array");
-  const messages = [];
-  const roles = [];
-  for (const m of payload.messages) {
-    if (!isRecord(m) || typeof m.role !== "string") return reject("message-missing-role");
-    const text = plainText(m.content);
-    if (text === void 0) return reject("structured-content");
-    roles.push(m.role);
-    messages.push({ role: m.role, content: text });
-  }
-  const original = payload.messages;
-  return {
-    messages,
-    apply: (compressed) => {
-      const next = compressed.length === original.length ? compressed.map((c, i) => {
-        const src = original[i];
-        if (isRecord(src)) return { ...src, content: c.content };
-        return { role: roles[i] ?? c.role, content: c.content };
-      }) : compressed.map((c) => ({ role: c.role, content: c.content }));
-      return { ...payload, messages: next };
-    }
-  };
-}
-var lastRejectReason = null;
-function reject(reason) {
-  if (lastRejectReason !== reason) {
-    lastRejectReason = reason;
-    log.debug({ event: "payload-skipped", reason });
-  }
-  return null;
-}
-function payloadChars(messages) {
-  let n = 0;
-  for (const m of messages) n += m.content.length;
-  return n;
-}
-
-// src/stage.ts
-var HeadroomStage = class {
-  constructor(getConfig) {
-    this.getConfig = getConfig;
-  }
-  getConfig;
-  stats = { applied: 0, savedTokens: 0, skipped: 0 };
-  /** Last known proxy reachability, for the status line: undefined = not yet
-   *  probed, true = last request-path check passed, false = down. */
-  lastProxyUp = void 0;
-  /** Consecutive rounds with an unreachable proxy — the UI notice fires only
-   *  on a confirmed outage, not a single stalled probe. */
-  downRounds = 0;
-  notifiedUnavailable = false;
-  proxyTried = false;
-  resetSession() {
-    this.stats = { applied: 0, savedTokens: 0, skipped: 0 };
-    this.lastProxyUp = void 0;
-    this.downRounds = 0;
-    this.notifiedUnavailable = false;
-    this.proxyTried = false;
-  }
-  /** Called by session_start after its own spawn attempt so the request path
-   *  never blocks on startup polling — it only fast health-checks afterwards. */
-  markProxyAttempted() {
-    this.proxyTried = true;
-  }
-  get unavailableStreak() {
-    return this.downRounds;
-  }
-  /** Compress a provider payload. Returns the original on any failure — the
-   *  request must always go through, compressed or not. */
-  async compress(payload) {
-    const cfg = this.getConfig();
-    if (!cfg.enabled) return payload;
-    try {
-      return await this.compressInner(payload, cfg);
-    } catch (e) {
-      log.warn({ event: "stage-error", error: e instanceof Error ? e.message : String(e) });
-      return payload;
-    }
-  }
-  async compressInner(payload, cfg) {
-    if (!await proxyHealthy(cfg.proxyUrl, cfg.timeoutMs)) {
-      if (cfg.autoStart && !this.proxyTried) {
-        this.proxyTried = true;
-        if (!await startProxy(cfg.proxyUrl, cfg.timeoutMs)) return this.noteDown(payload, cfg);
-      } else {
-        return this.noteDown(payload, cfg);
-      }
-    }
-    this.downRounds = 0;
-    this.lastProxyUp = true;
-    const view = projectPayload(payload);
-    if (!view) return this.skip(payload);
-    if (view.messages.length < cfg.minMessages) return this.skip(payload);
-    if (payloadChars(view.messages) < cfg.minPayloadChars) return this.skip(payload);
-    const model = modelOf(payload);
-    const body = {
-      model,
-      messages: view.messages,
-      config: {
-        mode: cfg.mode,
-        ...cfg.frozenMessageCount !== void 0 ? { frozen_message_count: cfg.frozenMessageCount } : {}
-      }
-    };
-    let data;
-    try {
-      const client = new HeadroomClient2({
-        baseUrl: cfg.proxyUrl,
-        timeout: cfg.timeoutMs,
-        retries: 0,
-        fallback: false
-      });
-      data = await client.compressRaw(body);
-    } catch (e) {
-      log.warn({ event: "compress-failed", error: e instanceof Error ? e.message : String(e) });
-      invalidateHealth(cfg.proxyUrl);
-      this.lastProxyUp = false;
-      return this.skip(payload);
-    }
-    const compressed = toMessages(data.messages);
-    if (!compressed) return this.skip(payload);
-    const before = num(data.tokens_before);
-    const after = num(data.tokens_after);
-    if (before > 0 && after > 0 && after >= before) {
-      log.debug({ event: "no-gain", before, after });
-      return this.skip(payload);
-    }
-    this.stats.applied += 1;
-    this.stats.savedTokens += Math.max(0, before - after);
-    log.info({ event: "applied", before, after, saved: Math.max(0, before - after) });
-    return view.apply(compressed);
-  }
-  skip(payload) {
-    this.stats.skipped += 1;
-    return payload;
-  }
-  noteDown(payload, cfg) {
-    this.downRounds += 1;
-    this.lastProxyUp = false;
-    this.stats.skipped += 1;
-    if (!this.notifiedUnavailable) {
-      this.notifiedUnavailable = true;
-      log.warn({
-        event: "proxy-unavailable",
-        proxyUrl: cfg.proxyUrl,
-        effect: "pass-through-uncompressed"
-      });
-    }
-    return payload;
-  }
-};
-function modelOf(payload) {
-  if (typeof payload === "object" && payload !== null) {
-    const m = payload.model;
-    if (typeof m === "string" && m.length > 0) return m;
-  }
-  return "default";
-}
-function toMessages(raw) {
-  if (!Array.isArray(raw) || raw.length === 0) return null;
-  const out = [];
-  for (const m of raw) {
-    if (!m || typeof m.role !== "string") return null;
-    out.push({ role: m.role, content: typeof m.content === "string" ? m.content : textOf(m.content) });
-  }
-  return out;
-}
-function textOf(content) {
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    const parts = [];
-    for (const block of content) {
-      if (typeof block === "string") parts.push(block);
-      else if (typeof block === "object" && block !== null && block.type === "text" && typeof block.text === "string") {
-        parts.push(block.text);
-      } else {
-        return "";
-      }
-    }
-    return parts.join("\n");
-  }
-  return "";
-}
-function num(v) {
-  return typeof v === "number" && Number.isFinite(v) ? v : 0;
-}
+// src/action-fusion.ts
+import { createHash } from "crypto";
+import { readFile, realpath } from "fs/promises";
+import { homedir as homedir3 } from "os";
+import { basename, dirname as dirname2, resolve } from "path";
+import { fileURLToPath } from "url";
+import {
+  createBashToolDefinition,
+  createEditToolDefinition,
+  createWriteToolDefinition
+} from "@earendil-works/pi-coding-agent";
 
 // node_modules/typebox/build/system/memory/memory.mjs
 var memory_exports = {};
@@ -4841,6 +4492,578 @@ __export(typebox_exports, {
   With: () => With2
 });
 
+// src/log.ts
+import { appendFileSync, statSync, renameSync, mkdirSync } from "fs";
+import { homedir as homedir2 } from "os";
+import * as path2 from "path";
+var LOG_FILE = process.env.ACP_HEADROOM_LOG ?? path2.join(homedir2(), ".pi", "acp-headroom.log");
+var MAX_BYTES = 10 * 1024 * 1024;
+var debugEnabled = process.env.ACP_DEBUG === "1" || process.env.ACP_DEBUG === "true";
+function rotateIfNeeded() {
+  try {
+    if (statSync(LOG_FILE).size > MAX_BYTES) renameSync(LOG_FILE, `${LOG_FILE}.1`);
+  } catch {
+  }
+}
+function write(level, event) {
+  try {
+    mkdirSync(path2.dirname(LOG_FILE), { recursive: true });
+    rotateIfNeeded();
+    appendFileSync(
+      LOG_FILE,
+      `${JSON.stringify({ ts: (/* @__PURE__ */ new Date()).toISOString(), level, ...event })}
+`,
+      "utf8"
+    );
+  } catch {
+  }
+}
+var log = {
+  info: (event) => write("info", event),
+  warn: (event) => write("warn", event),
+  error: (event) => write("error", event),
+  debug: (event) => {
+    if (debugEnabled) write("info", event);
+  }
+};
+
+// src/action-fusion.ts
+var THEN_RUN_SUCCEEDED = "[then_run:succeeded]";
+var THEN_RUN_FAILED = "[then_run:failed]";
+var THEN_RUN_SKIPPED = "[then_run:skipped]";
+function createThenRunSchema(description) {
+  return typebox_exports.Optional(
+    typebox_exports.Object(
+      {
+        command: typebox_exports.String({ description: "Bash command to run" }),
+        timeout: typebox_exports.Optional(
+          typebox_exports.Number({ description: "Timeout in seconds (optional, no default timeout)" })
+        )
+      },
+      { description }
+    )
+  );
+}
+var EDIT_THEN_RUN_DESCRIPTION = "Command to run next on this file after the edit succeeds \u2014 e.g. run, build, start/restart, install, or check it; optional timeout in seconds. Skipped if the edit fails; a non-zero exit is reported but keeps the edit.";
+var WRITE_THEN_RUN_DESCRIPTION = "Command to run next on this file after the write succeeds \u2014 e.g. run, build, start/restart, install, or check it; optional timeout in seconds. Skipped if the write fails; a non-zero exit is reported but keeps the write.";
+function stripToolPathPrefix(filePath) {
+  return filePath.startsWith("@") ? filePath.slice(1) : filePath;
+}
+function resolveToolPath(cwd, filePath) {
+  const stripped = stripToolPathPrefix(filePath);
+  const expanded = stripped.startsWith("file://") ? fileURLToPath(stripped) : stripped;
+  if (expanded === "~") return homedir3();
+  if (expanded.startsWith("~/")) return resolve(homedir3(), expanded.slice(2));
+  return resolve(cwd, expanded);
+}
+var queueTails = /* @__PURE__ */ new Map();
+function isMissingPathError(error) {
+  return typeof error === "object" && error !== null && "code" in error && (error.code === "ENOENT" || error.code === "ENOTDIR");
+}
+async function canonicalQueueKey(filePath) {
+  const resolvedPath = resolve(filePath);
+  let current = resolvedPath;
+  const missingSegments = [];
+  for (; ; ) {
+    try {
+      return resolve(await realpath(current), ...missingSegments);
+    } catch (error) {
+      if (!isMissingPathError(error)) throw error;
+      const parent = dirname2(current);
+      if (parent === current) return resolvedPath;
+      missingSegments.unshift(basename(current));
+      current = parent;
+    }
+  }
+}
+async function withFusedFileQueue(filePath, work) {
+  const key = await canonicalQueueKey(filePath);
+  const previous = queueTails.get(key) ?? Promise.resolve();
+  let release;
+  const owned = new Promise((resolveOwned) => {
+    release = resolveOwned;
+  });
+  const tail = previous.then(() => owned);
+  queueTails.set(key, tail);
+  await previous;
+  try {
+    return await work();
+  } finally {
+    release();
+    if (queueTails.get(key) === tail) queueTails.delete(key);
+  }
+}
+function errorText(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+function resultText(result) {
+  return result.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
+}
+function thenRunSkippedError(error) {
+  return new Error(
+    `${errorText(error)}
+
+${THEN_RUN_SKIPPED} The file mutation did not complete successfully; the command was not run.`
+  );
+}
+async function fileSha256(path3) {
+  return createHash("sha256").update(await readFile(path3)).digest("hex");
+}
+async function assertUnchangedBeforeCommand(path3, yieldForInterference = () => new Promise((resolve2) => setImmediate(resolve2))) {
+  try {
+    const mutationHash = await fileSha256(path3);
+    await yieldForInterference();
+    const commandHash = await fileSha256(path3);
+    if (mutationHash !== commandHash) {
+      throw new Error("target content changed after the fused mutation");
+    }
+  } catch (error) {
+    throw new Error(`${THEN_RUN_SKIPPED} ${errorText(error)}; the command was not run.`);
+  }
+}
+async function executeMutationThenRun({
+  toolCallId,
+  absolutePath,
+  thenRun,
+  mutate,
+  runBash,
+  signal,
+  ctx
+}) {
+  return withFusedFileQueue(absolutePath, async () => {
+    let mutationResult;
+    try {
+      mutationResult = await mutate();
+    } catch (error) {
+      if (thenRun !== void 0) {
+        throw thenRunSkippedError(error);
+      }
+      throw error;
+    }
+    if (thenRun === void 0) {
+      return mutationResult;
+    }
+    await assertUnchangedBeforeCommand(absolutePath);
+    try {
+      const bash = runBash ?? (async (input) => {
+        const bashTool = createBashToolDefinition(ctx.cwd);
+        return bashTool.execute(`${toolCallId}:then_run`, input, signal, void 0, ctx);
+      });
+      const bashResult = await bash(thenRun);
+      const output = resultText(bashResult);
+      log.info({ event: "action-fusion", phase: "then-run", tool: toolCallId, ok: true });
+      return {
+        ...mutationResult,
+        content: [
+          ...mutationResult.content,
+          { type: "text", text: output ? `${THEN_RUN_SUCCEEDED}
+${output}` : THEN_RUN_SUCCEEDED }
+        ]
+      };
+    } catch (error) {
+      log.info({ event: "action-fusion", phase: "then-run", tool: toolCallId, ok: false });
+      const mutationOutput = resultText(mutationResult);
+      throw new Error([mutationOutput, THEN_RUN_FAILED, errorText(error)].filter(Boolean).join("\n\n"));
+    }
+  });
+}
+function memoizeByCwd(create) {
+  const cache = /* @__PURE__ */ new Map();
+  return (cwd) => {
+    const cached = cache.get(cwd);
+    if (cached) return cached;
+    const created = create(cwd);
+    cache.set(cwd, created);
+    return created;
+  };
+}
+function registerActionFusionTools(pi) {
+  const baseEdit = memoizeByCwd((cwd) => createEditToolDefinition(cwd));
+  const baseWrite = memoizeByCwd((cwd) => createWriteToolDefinition(cwd));
+  const editTemplate = baseEdit(process.cwd());
+  const writeTemplate = baseWrite(process.cwd());
+  const editParameters = typebox_exports.Object({
+    ...editTemplate.parameters.properties,
+    then_run: createThenRunSchema(EDIT_THEN_RUN_DESCRIPTION)
+  });
+  pi.registerTool({
+    ...editTemplate,
+    parameters: editParameters,
+    async execute(toolCallId, input, signal, onUpdate, ctx) {
+      const { then_run, ...editInput } = input;
+      return executeMutationThenRun({
+        toolCallId,
+        absolutePath: resolveToolPath(ctx.cwd, String(editInput.path ?? "")),
+        thenRun: then_run,
+        mutate: () => baseEdit(ctx.cwd).execute(toolCallId, editInput, signal, onUpdate, ctx),
+        signal,
+        ctx
+      });
+    }
+  });
+  const writeParameters = typebox_exports.Object({
+    ...writeTemplate.parameters.properties,
+    then_run: createThenRunSchema(WRITE_THEN_RUN_DESCRIPTION)
+  });
+  pi.registerTool({
+    ...writeTemplate,
+    parameters: writeParameters,
+    async execute(toolCallId, input, signal, onUpdate, ctx) {
+      const { then_run, ...writeInput } = input;
+      return executeMutationThenRun({
+        toolCallId,
+        absolutePath: resolveToolPath(ctx.cwd, String(writeInput.path ?? "")),
+        thenRun: then_run,
+        mutate: () => baseWrite(ctx.cwd).execute(toolCallId, writeInput, signal, onUpdate, ctx),
+        signal,
+        ctx
+      });
+    }
+  });
+}
+var ACTION_FUSION_PROMPT = `
+ACTION FUSION
+
+The edit and write tools accept an optional then_run: { command, timeout? } parameter. When the follow-up validation command for a file change is already known (build, test, run, restart, install, check), pass it in the SAME call instead of issuing a separate bash turn \u2014 the mutation and the command return as one combined observation. The command is skipped when the mutation fails; a non-zero command exit is reported but keeps the mutation.
+`;
+
+// src/proxy.ts
+import { spawn, execFile } from "child_process";
+import { HeadroomClient } from "headroom-ai";
+var HEALTH_TTL_MS = 3e4;
+var NEGATIVE_TTL_MS = 15e3;
+var STARTUP_POLL_MS = 500;
+var STARTUP_DEADLINE_MS = 2e4;
+var healthByOrigin = /* @__PURE__ */ new Map();
+var spawned = /* @__PURE__ */ new Set();
+var starting = /* @__PURE__ */ new Map();
+function stateFor(baseUrl) {
+  const origin = originOf(baseUrl);
+  let s = healthByOrigin.get(origin);
+  if (!s) {
+    s = { healthyUntil: 0, unhealthyUntil: 0 };
+    healthByOrigin.set(origin, s);
+  }
+  return s;
+}
+function originOf(baseUrl) {
+  try {
+    return new URL(baseUrl).origin;
+  } catch {
+    return baseUrl;
+  }
+}
+function invalidateHealth(baseUrl) {
+  if (baseUrl) healthByOrigin.delete(originOf(baseUrl));
+  else healthByOrigin.clear();
+}
+async function healthOnce(baseUrl, timeoutMs) {
+  try {
+    const client = new HeadroomClient({ baseUrl, timeout: timeoutMs, retries: 0, fallback: false });
+    await client.health();
+    return true;
+  } catch {
+    return false;
+  }
+}
+async function proxyHealthy(baseUrl, timeoutMs) {
+  const now = Date.now();
+  const s = stateFor(baseUrl);
+  if (now < s.healthyUntil) return true;
+  if (now < s.unhealthyUntil) return false;
+  if (await healthOnce(baseUrl, timeoutMs) || await healthOnce(baseUrl, timeoutMs)) {
+    s.healthyUntil = Date.now() + HEALTH_TTL_MS;
+    s.unhealthyUntil = 0;
+    return true;
+  }
+  s.unhealthyUntil = Date.now() + NEGATIVE_TTL_MS;
+  return false;
+}
+function startProxy(baseUrl, timeoutMs) {
+  const key = originOf(baseUrl);
+  const inFlight = starting.get(key);
+  if (inFlight) return inFlight;
+  const attempt = spawnProxy(baseUrl, timeoutMs).finally(() => starting.delete(key));
+  starting.set(key, attempt);
+  return attempt;
+}
+async function spawnProxy(baseUrl, timeoutMs) {
+  const port = portOf(baseUrl);
+  const commands = [
+    { cmd: "headroom", args: ["proxy", "--port", port] },
+    { cmd: "uv", args: ["tool", "run", "--from", "headroom-ai[proxy]", "headroom", "proxy", "--port", port] }
+  ];
+  for (const { cmd, args } of commands) {
+    let failed = false;
+    let child;
+    try {
+      child = spawn(cmd, args, { detached: true, stdio: "ignore", windowsHide: true });
+    } catch {
+      continue;
+    }
+    child.on("error", () => {
+      failed = true;
+      spawned.delete(child);
+    });
+    spawned.add(child);
+    child.unref();
+    const deadline = Date.now() + STARTUP_DEADLINE_MS;
+    while (!failed && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, STARTUP_POLL_MS));
+      if (await healthOnce(baseUrl, timeoutMs)) {
+        const s = stateFor(baseUrl);
+        s.healthyUntil = Date.now() + HEALTH_TTL_MS;
+        s.unhealthyUntil = 0;
+        return true;
+      }
+    }
+    killTree(child);
+    spawned.delete(child);
+  }
+  log.warn({ event: "proxy-start-failed", baseUrl });
+  return false;
+}
+function killTree(child) {
+  try {
+    if (process.platform === "win32" && child.pid) {
+      execFile("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true }, () => {
+      });
+    } else {
+      child.kill();
+    }
+  } catch {
+    try {
+      child.kill();
+    } catch {
+    }
+  }
+}
+function stopSpawnedProxies() {
+  for (const child of spawned) killTree(child);
+  spawned.clear();
+}
+function portOf(baseUrl) {
+  try {
+    return new URL(baseUrl).port || "8787";
+  } catch {
+    return "8787";
+  }
+}
+
+// src/stage.ts
+import { HeadroomClient as HeadroomClient2 } from "headroom-ai";
+
+// src/format.ts
+function isRecord(v) {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+function plainText(content) {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    const parts = [];
+    for (const block of content) {
+      if (typeof block === "string") {
+        parts.push(block);
+        continue;
+      }
+      if (isRecord(block) && block.type === "text" && typeof block.text === "string") {
+        parts.push(block.text);
+        continue;
+      }
+      return void 0;
+    }
+    return parts.join("\n");
+  }
+  return void 0;
+}
+function projectPayload(payload) {
+  if (!isRecord(payload)) return reject("payload-not-object");
+  if (!Array.isArray(payload.messages)) return reject("no-messages-array");
+  const messages = [];
+  const roles = [];
+  for (const m of payload.messages) {
+    if (!isRecord(m) || typeof m.role !== "string") return reject("message-missing-role");
+    const text = plainText(m.content);
+    if (text === void 0) return reject("structured-content");
+    roles.push(m.role);
+    messages.push({ role: m.role, content: text });
+  }
+  const original = payload.messages;
+  return {
+    messages,
+    apply: (compressed) => {
+      const next = compressed.length === original.length ? compressed.map((c, i) => {
+        const src = original[i];
+        if (isRecord(src)) return { ...src, content: c.content };
+        return { role: roles[i] ?? c.role, content: c.content };
+      }) : compressed.map((c) => ({ role: c.role, content: c.content }));
+      return { ...payload, messages: next };
+    }
+  };
+}
+var lastRejectReason = null;
+function reject(reason) {
+  if (lastRejectReason !== reason) {
+    lastRejectReason = reason;
+    log.debug({ event: "payload-skipped", reason });
+  }
+  return null;
+}
+function payloadChars(messages) {
+  let n = 0;
+  for (const m of messages) n += m.content.length;
+  return n;
+}
+
+// src/stage.ts
+var HeadroomStage = class {
+  constructor(getConfig) {
+    this.getConfig = getConfig;
+  }
+  getConfig;
+  stats = { applied: 0, savedTokens: 0, skipped: 0 };
+  /** Last known proxy reachability, for the status line: undefined = not yet
+   *  probed, true = last request-path check passed, false = down. */
+  lastProxyUp = void 0;
+  /** Consecutive rounds with an unreachable proxy — the UI notice fires only
+   *  on a confirmed outage, not a single stalled probe. */
+  downRounds = 0;
+  notifiedUnavailable = false;
+  proxyTried = false;
+  resetSession() {
+    this.stats = { applied: 0, savedTokens: 0, skipped: 0 };
+    this.lastProxyUp = void 0;
+    this.downRounds = 0;
+    this.notifiedUnavailable = false;
+    this.proxyTried = false;
+  }
+  /** Called by session_start after its own spawn attempt so the request path
+   *  never blocks on startup polling — it only fast health-checks afterwards. */
+  markProxyAttempted() {
+    this.proxyTried = true;
+  }
+  get unavailableStreak() {
+    return this.downRounds;
+  }
+  /** Compress a provider payload. Returns the original on any failure — the
+   *  request must always go through, compressed or not. */
+  async compress(payload) {
+    const cfg = this.getConfig();
+    if (!cfg.enabled) return payload;
+    try {
+      return await this.compressInner(payload, cfg);
+    } catch (e) {
+      log.warn({ event: "stage-error", error: e instanceof Error ? e.message : String(e) });
+      return payload;
+    }
+  }
+  async compressInner(payload, cfg) {
+    if (!await proxyHealthy(cfg.proxyUrl, cfg.timeoutMs)) {
+      if (cfg.autoStart && !this.proxyTried) {
+        this.proxyTried = true;
+        if (!await startProxy(cfg.proxyUrl, cfg.timeoutMs)) return this.noteDown(payload, cfg);
+      } else {
+        return this.noteDown(payload, cfg);
+      }
+    }
+    this.downRounds = 0;
+    this.lastProxyUp = true;
+    const view = projectPayload(payload);
+    if (!view) return this.skip(payload);
+    if (view.messages.length < cfg.minMessages) return this.skip(payload);
+    if (payloadChars(view.messages) < cfg.minPayloadChars) return this.skip(payload);
+    const model = modelOf(payload);
+    const body = {
+      model,
+      messages: view.messages,
+      config: {
+        mode: cfg.mode,
+        ...cfg.frozenMessageCount !== void 0 ? { frozen_message_count: cfg.frozenMessageCount } : {}
+      }
+    };
+    let data;
+    try {
+      const client = new HeadroomClient2({
+        baseUrl: cfg.proxyUrl,
+        timeout: cfg.timeoutMs,
+        retries: 0,
+        fallback: false
+      });
+      data = await client.compressRaw(body);
+    } catch (e) {
+      log.warn({ event: "compress-failed", error: e instanceof Error ? e.message : String(e) });
+      invalidateHealth(cfg.proxyUrl);
+      this.lastProxyUp = false;
+      return this.skip(payload);
+    }
+    const compressed = toMessages(data.messages);
+    if (!compressed) return this.skip(payload);
+    const before = num(data.tokens_before);
+    const after = num(data.tokens_after);
+    if (before > 0 && after > 0 && after >= before) {
+      log.debug({ event: "no-gain", before, after });
+      return this.skip(payload);
+    }
+    this.stats.applied += 1;
+    this.stats.savedTokens += Math.max(0, before - after);
+    log.info({ event: "applied", before, after, saved: Math.max(0, before - after) });
+    return view.apply(compressed);
+  }
+  skip(payload) {
+    this.stats.skipped += 1;
+    return payload;
+  }
+  noteDown(payload, cfg) {
+    this.downRounds += 1;
+    this.lastProxyUp = false;
+    this.stats.skipped += 1;
+    if (!this.notifiedUnavailable) {
+      this.notifiedUnavailable = true;
+      log.warn({
+        event: "proxy-unavailable",
+        proxyUrl: cfg.proxyUrl,
+        effect: "pass-through-uncompressed"
+      });
+    }
+    return payload;
+  }
+};
+function modelOf(payload) {
+  if (typeof payload === "object" && payload !== null) {
+    const m = payload.model;
+    if (typeof m === "string" && m.length > 0) return m;
+  }
+  return "default";
+}
+function toMessages(raw) {
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  const out = [];
+  for (const m of raw) {
+    if (!m || typeof m.role !== "string") return null;
+    out.push({ role: m.role, content: typeof m.content === "string" ? m.content : textOf(m.content) });
+  }
+  return out;
+}
+function textOf(content) {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    const parts = [];
+    for (const block of content) {
+      if (typeof block === "string") parts.push(block);
+      else if (typeof block === "object" && block !== null && block.type === "text" && typeof block.text === "string") {
+        parts.push(block.text);
+      } else {
+        return "";
+      }
+    }
+    return parts.join("\n");
+  }
+  return "";
+}
+function num(v) {
+  return typeof v === "number" && Number.isFinite(v) ? v : 0;
+}
+
 // src/retrieve-tool.ts
 var HASH_RE = /^[a-f0-9]{12,24}$/i;
 var RetrieveParams = typebox_exports.Object({
@@ -4948,6 +5171,7 @@ var INSTALL_HINT = 'Install it with: uv tool install --python 3.13 "headroom-ai[
 function createFusionExtension() {
   return (pi) => {
     let cfg = HEADROOM_DEFAULTS;
+    let actionFusionOn = false;
     const stage = new HeadroomStage(() => cfg);
     const status = new HeadroomStatus();
     createAcpExtension({})(pi);
@@ -4962,6 +5186,13 @@ function createFusionExtension() {
       }
       status.attach(ctx.ui, ctx.hasUI);
       status.update(stage, cfg);
+      try {
+        actionFusionOn = await loadActionFusionEnabled(ctx.cwd);
+      } catch (e) {
+        log.warn({ event: "action-fusion-config-failed", error: e instanceof Error ? e.message : String(e) });
+        actionFusionOn = false;
+      }
+      if (actionFusionOn) registerActionFusionTools(pi);
       if (!cfg.enabled) return;
       log.info({ event: "session-start", proxyUrl: cfg.proxyUrl, mode: cfg.mode });
       if (cfg.mode === "ccr") {
@@ -4984,9 +5215,11 @@ function createFusionExtension() {
       })();
     });
     pi.on("before_agent_start", (event) => {
-      if (!cfg.enabled || cfg.mode !== "ccr") return;
-      return { systemPrompt: `${event.systemPrompt ?? ""}
-${HEADROOM_PROMPT}` };
+      const parts = [event.systemPrompt ?? ""];
+      if (cfg.enabled && cfg.mode === "ccr") parts.push(HEADROOM_PROMPT);
+      if (actionFusionOn) parts.push(ACTION_FUSION_PROMPT);
+      if (parts.length === 1) return;
+      return { systemPrompt: parts.join("\n") };
     });
     pi.on("before_provider_request", async (event, ctx) => {
       if (!cfg.enabled) return;

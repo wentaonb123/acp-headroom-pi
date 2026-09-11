@@ -5,7 +5,8 @@ import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
 
 /** User-facing headroom settings, read from the `headroom` key of acp.json.
  *  Every other key in that file belongs to billion-context-pi — this plugin
- *  claims only this namespace, so the two config surfaces never collide. */
+ *  claims the `headroom` and `actionFusion` namespaces, so the config
+ *  surfaces never collide (upstream filters unknown keys out). */
 export interface HeadroomSettings {
   /** Set false to bypass the headroom stage entirely (ACP is unaffected). */
   enabled?: boolean;
@@ -83,6 +84,30 @@ export async function loadHeadroomSettings(cwd: string): Promise<ResolvedHeadroo
     }
   }
   return resolveHeadroom(merged);
+}
+
+/** Action Fusion (acp.json `actionFusion` key). Borrowed from NVLabs/SoL-Pi
+ *  (MIT): replaces pi's built-in edit/write tools with versions that accept
+ *  an optional `then_run` follow-up command, saving one model round-trip per
+ *  edit+validate pair. On by default — set false to keep pi's stock tools. */
+export type ActionFusionSettings = boolean;
+
+/** Read only the `actionFusion` key from acp.json. Project config overrides
+ *  global; an explicit project `false` overrides a global `true`. Default:
+ *  true (an absent key keeps Action Fusion enabled). Never throws. */
+export async function loadActionFusionEnabled(cwd: string): Promise<boolean> {
+  let enabled = true;
+  for (const base of [path.join(homedir(), CONFIG_DIR_NAME), path.join(cwd, CONFIG_DIR_NAME)]) {
+    try {
+      const parsed: unknown = JSON.parse(await fs.readFile(path.join(base, "acp.json"), "utf8"));
+      if (isObject(parsed) && typeof parsed.actionFusion === "boolean") {
+        enabled = parsed.actionFusion;
+      }
+    } catch {
+      // missing file or bad JSON: keep whatever we already have
+    }
+  }
+  return enabled;
 }
 
 function isObject(v: unknown): v is Record<string, unknown> {

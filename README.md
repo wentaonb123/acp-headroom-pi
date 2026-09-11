@@ -41,7 +41,7 @@ headroom proxy --port 8787        # or let the extension auto-start it
 
 ## Configuration
 
-One config file: `~/.pi/acp.json` (or `<project>/.pi/acp.json`, which overrides global keys). This plugin claims **only** the `"headroom"` key; every other key (including billion-context-pi's) belongs to the upstream extension and is read by it directly.
+One config file: `~/.pi/acp.json` (or `<project>/.pi/acp.json`, which overrides global keys). This plugin claims the `"headroom"` and `"actionFusion"` keys; every other key (including billion-context-pi's) belongs to the upstream extension and is read by it directly.
 
 ```jsonc
 {
@@ -56,13 +56,32 @@ One config file: `~/.pi/acp.json` (or `<project>/.pi/acp.json`, which overrides 
     "frozenMessageCount": 2,         // pin prefix for provider prompt-cache hits
     "timeoutMs": 3000,
     "autoStart": true                // spawn the proxy if it is not reachable
-  }
+  },
+  "actionFusion": true               // on by default; false keeps pi's stock edit/write
 }
 ```
 
 To disable billion-context-pi's delegate-agent feature, set the corresponding upstream key (see its README) — no fork needed. That is the point of this project: behavior changes are configuration, not code.
 
 `HEADROOM_PROXY_URL` (env) overrides `proxyUrl`. `ACP_HEADROOM_LOG` moves the log file (default `~/.pi/acp-headroom.log`, rotated at 10 MB); `ACP_DEBUG=1` enables debug events.
+
+## Action Fusion
+
+Borrowed from [NVLabs/SoL-Pi](https://github.com/NVlabs/SoL-Pi) (MIT). Base rollouts repeatedly show the same two turns: edit a file, then run a build/test/run command against it. **On by default**, the built-in `edit` and `write` tools are replaced by versions that accept an optional `then_run: { command, timeout? }` parameter:
+
+```
+edit({ path, oldText, newText, then_run: { command: "npm test" } })
+```
+
+The mutation and the command run in one tool call and return as a single combined observation — the model decision between the two turns disappears (one model round-trip saved per edit+validate pair, which also removes one message pair from context). Semantics:
+
+- Mutation fails → the command is **skipped** and the error carries a `[then_run:skipped]` marker.
+- Command exits non-zero → the error carries `[then_run:failed]` plus the mutation output; the edit/write is **kept**.
+- Before the command runs, the target file is re-hashed: if anything changed it in between, the command is skipped rather than validating the wrong content.
+- Fused operations on the same canonical file path are serialized (a per-path queue), so two fused mutations of one file cannot interleave.
+- `timeout` is in seconds, optional, no default — pass one for commands that may hang.
+
+Default is `true` (an absent key keeps Action Fusion enabled); set `"actionFusion": false` to restore pi's stock tools. Config resolves at global or project scope; an explicit project `false` overrides a global `true`.
 
 ## Status line
 

@@ -2,9 +2,11 @@ import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-a
 import { createAcpExtension } from "billion-context-pi";
 import {
   HEADROOM_DEFAULTS,
+  loadActionFusionEnabled,
   loadHeadroomSettings,
   type ResolvedHeadroom,
 } from "./config.js";
+import { ACTION_FUSION_PROMPT, registerActionFusionTools } from "./action-fusion.js";
 import { invalidateHealth, proxyHealthy, startProxy, stopSpawnedProxies } from "./proxy.js";
 import { HeadroomStage } from "./stage.js";
 import { makeRetrieveTool } from "./retrieve-tool.js";
@@ -36,6 +38,7 @@ const INSTALL_HINT =
 export function createFusionExtension(): ExtensionFactory {
   return (pi: ExtensionAPI) => {
     let cfg: ResolvedHeadroom = HEADROOM_DEFAULTS;
+    let actionFusionOn = false;
     const stage = new HeadroomStage(() => cfg);
     const status = new HeadroomStatus();
 
@@ -55,6 +58,19 @@ export function createFusionExtension(): ExtensionFactory {
       }
       status.attach(ctx.ui, ctx.hasUI);
       status.update(stage, cfg);
+
+      // Action Fusion (on by default): replace edit/write with fused versions
+      // that accept a then_run follow-up command. Registered in session_start
+      // so the config file decides per project; pi 0.83 has no trust gate, so
+      // a project-local acp.json disables it the same way it enables headroom.
+      try {
+        actionFusionOn = await loadActionFusionEnabled(ctx.cwd);
+      } catch (e) {
+        log.warn({ event: "action-fusion-config-failed", error: e instanceof Error ? e.message : String(e) });
+        actionFusionOn = false;
+      }
+      if (actionFusionOn) registerActionFusionTools(pi);
+
       if (!cfg.enabled) return;
 
       log.info({ event: "session-start", proxyUrl: cfg.proxyUrl, mode: cfg.mode });
@@ -85,8 +101,11 @@ export function createFusionExtension(): ExtensionFactory {
     });
 
     pi.on("before_agent_start", (event) => {
-      if (!cfg.enabled || cfg.mode !== "ccr") return;
-      return { systemPrompt: `${event.systemPrompt ?? ""}\n${HEADROOM_PROMPT}` };
+      const parts: string[] = [event.systemPrompt ?? ""];
+      if (cfg.enabled && cfg.mode === "ccr") parts.push(HEADROOM_PROMPT);
+      if (actionFusionOn) parts.push(ACTION_FUSION_PROMPT);
+      if (parts.length === 1) return;
+      return { systemPrompt: parts.join("\n") };
     });
 
     // 2. Headroom layer: optimize the exact bytes about to go on the wire.

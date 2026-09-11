@@ -1,6 +1,7 @@
 /** User-facing headroom settings, read from the `headroom` key of acp.json.
  *  Every other key in that file belongs to billion-context-pi — this plugin
- *  claims only this namespace, so the two config surfaces never collide. */
+ *  claims the `headroom` and `actionFusion` namespaces, so the config
+ *  surfaces never collide (upstream filters unknown keys out). */
 export interface HeadroomSettings {
     /** Set false to bypass the headroom stage entirely (ACP is unaffected). */
     enabled?: boolean;
@@ -39,3 +40,12 @@ export declare function resolveHeadroom(raw: unknown): ResolvedHeadroom;
 /** Read only the `headroom` key from acp.json. Project config overrides
  *  global. Never throws — a missing or broken file falls back to defaults. */
 export declare function loadHeadroomSettings(cwd: string): Promise<ResolvedHeadroom>;
+/** Action Fusion (acp.json `actionFusion` key). Borrowed from NVLabs/SoL-Pi
+ *  (MIT): replaces pi's built-in edit/write tools with versions that accept
+ *  an optional `then_run` follow-up command, saving one model round-trip per
+ *  edit+validate pair. On by default — set false to keep pi's stock tools. */
+export type ActionFusionSettings = boolean;
+/** Read only the `actionFusion` key from acp.json. Project config overrides
+ *  global; an explicit project `false` overrides a global `true`. Default:
+ *  true (an absent key keeps Action Fusion enabled). Never throws. */
+export declare function loadActionFusionEnabled(cwd: string): Promise<boolean>;
